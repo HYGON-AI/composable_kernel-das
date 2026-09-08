@@ -1,0 +1,8 @@
+# Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
+# SPDX-License-Identifier: MIT
+
+add_example_executable(example_contraction_bilinear_xdl_fp32 contraction_bilinear_xdl_fp32.cpp)
+add_example_executable(example_contraction_scale_xdl_fp32 contraction_scale_xdl_fp32.cpp)
+
+add_example_executable(example_contraction_bilinear_xdl_fp64 contraction_bilinear_xdl_fp64.cpp)
+add_example_executable(example_contraction_scale_xdl_fp64 contraction_scale_xdl_fp64.cpp)

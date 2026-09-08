@@ -1,0 +1,11 @@
+add_executable(tile_example_elementwise_add EXCLUDE_FROM_ALL elementwise_add.cpp)
+target_link_libraries(tile_example_elementwise_add PRIVATE utility)
+
+add_executable(tile_example_elementwise_unary_square EXCLUDE_FROM_ALL elementwise_unary_square.cpp)
+target_link_libraries(tile_example_elementwise_unary_square PRIVATE utility)
+
+add_executable(tile_example_elementwise_transpose EXCLUDE_FROM_ALL elementwise_transpose.cpp)
+target_link_libraries(tile_example_elementwise_transpose PRIVATE utility)
+
+add_executable(tile_example_elementwise_add_4d EXCLUDE_FROM_ALL elementwise_add_4d.cpp)
+target_link_libraries(tile_example_elementwise_add_4d PRIVATE utility)

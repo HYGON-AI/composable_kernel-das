@@ -1,0 +1,12 @@
+# Copyright (c) 2026 Hygon Info Technologies Ltd.
+# SPDX-License-Identifier: MIT
+
+# hcu examples
+add_custom_target(example_gemm_mmac_bias_activation)
+
+add_example_executable(example_gemm_bias_relu_mmac_fp16 gemm_bias_relu_mmac_fp16.cpp)
+add_example_executable(example_gemm_bias_relu_mmac_fp16_wavelet gemm_bias_relu_mmac_fp16_wavelet.cpp)
+set_tests_properties(example_gemm_bias_relu_mmac_fp16_wavelet PROPERTIES SKIP_RETURN_CODE 77)
+
+add_dependencies(example_gemm_mmac_bias_activation example_gemm_bias_relu_mmac_fp16)
+add_dependencies(example_gemm_mmac_bias_activation example_gemm_bias_relu_mmac_fp16_wavelet)

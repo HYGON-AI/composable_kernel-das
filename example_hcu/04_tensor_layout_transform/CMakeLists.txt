@@ -1,0 +1,8 @@
+# Copyright (c) 2026 Hygon Info Technologies Ltd.
+# SPDX-License-Identifier: MIT
+
+add_custom_target(example_tensor_layout_transform)
+
+add_example_executable(example_tensor_layout_transform_ngchw_ngchwc32_fp16 layout_transform_ngchw_ngchwc32_fp16.cpp)
+
+add_dependencies(example_tensor_layout_transform example_tensor_layout_transform_ngchw_ngchwc32_fp16)

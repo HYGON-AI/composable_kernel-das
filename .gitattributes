@@ -1,0 +1,5 @@
+# Normalize line endings in repo (LF), let core.autocrlf handle working tree
+* text=auto
+
+# Shell scripts must stay LF for Linux/Docker execution.
+*.sh text eol=lf

@@ -1,0 +1,2 @@
+# CK-owned gfx938 quant grouped-GEMM provider source manifest.
+providers/grouped_gemm_quant_registry.cu

@@ -1,0 +1,9 @@
+# CK-owned HIP provider source manifest. Paths are relative to this directory.
+providers/grouped_gemm_registry_fp16.cu
+providers/grouped_gemm_registry_bf16.cu
+providers/grouped_gemm_bw_fp16.cu
+providers/grouped_gemm_bw_bf16.cu
+providers/grouped_gemm_bw_bf16_nn_fixed.cu
+providers/grouped_gemm_bw_bf16_nn_fast.cu
+providers/grouped_gemm_bw_bf16_tn_transposed.cu
+providers/grouped_gemm_bw_bf16_tn_logical_k_tail.cu

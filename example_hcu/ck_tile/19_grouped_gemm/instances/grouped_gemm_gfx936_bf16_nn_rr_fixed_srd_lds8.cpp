@@ -1,0 +1,16 @@
+// Copyright (c) 2026 Hygon Info Technologies Ltd.
+// SPDX-License-Identifier: MIT
+
+// Canonical CK-owned tag93701 device-args provider.
+#define CK_TILE_GROUPED_GEMM_UNIQUE_KERNEL_TAG 93701
+#define CK_TILE_GROUPED_GEMM_GRID_SWEEP_RUNTIME
+#define CK_TILE_GROUPED_GEMM_GFX936_RR_BLAS_LDS_WAIT_COUNT 8
+#define CK_TILE_GROUPED_GEMM_GFX936_RR_BLAS_BOUNDARY_LDS_WAIT_COUNT 0
+#define CK_TILE_GROUPED_GEMM_GFX936_RR_BLAS_BOUNDARY_VMEM_WAIT_COUNT 0
+#define CK_TILE_GROUPED_GEMM_GFX936_RR_BLAS_SETPRIO_AFTER_FIRST
+#define CK_TILE_GROUPED_GEMM_GFX936_RR_BLAS_FIXED_STREAM_SRD
+#define CK_TILE_GROUPED_GEMM_BF16_NN_RR_BOUNDARY_ENTRY \
+    ck_tile_hcu_grouped_gemm_bw_family_bf16_nn_rr_fixed_srd_lds8_boundary_lds0_vmem0_device_args
+#define CK_TILE_GROUPED_GEMM_BF16_NN_RR_BOUNDARY_COMPAT_ENTRY \
+    ck_tile_hcu_grouped_gemm_gfx936_bf16_nn_rr_fixed_srd_lds8_boundary_lds0_vmem0_device_args
+#include "grouped_gemm_gfx936_bf16_nn_rr_boundary_vmem.cpp"

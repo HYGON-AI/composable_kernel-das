@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rocm-composable-kernel"
+version = "0.0.0+hcu"
+description = "Composable Kernel, performance-critical kernels for machine learning workloads"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {file = "LICENSE"}
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = []
+
+[project.urls]
+"Homepage" = "https://github.com/ROCm/composable_kernel"
+"Bug Tracker" = "https://github.com/ROCm/composable_kernel/issues"
+
+[tool.setuptools]
+packages = [
+    "ck4inductor",
+    "ck4inductor.include",
+    "ck4inductor.library",
+    "ck4inductor.universal_gemm",
+    "ck4inductor.batched_universal_gemm",
+    "ck4inductor.grouped_conv_fwd",
+    "ck4inductor.hcu_grouped_conv_fwd",
+    "ck4inductor.ck_tile_universal_gemm",
+    "ck4inductor.ck_tile_grouped_gemm",
+]
+
+[tool.setuptools.package-dir]
+ck4inductor = "python/ck4inductor"
+"ck4inductor.universal_gemm" = "python/ck4inductor/universal_gemm"
+"ck4inductor.batched_universal_gemm" = "python/ck4inductor/batched_universal_gemm"
+"ck4inductor.grouped_conv_fwd" = "python/ck4inductor/grouped_conv_fwd"
+"ck4inductor.hcu_grouped_conv_fwd" = "python/ck4inductor/hcu_grouped_conv_fwd"
+"ck4inductor.ck_tile_universal_gemm" = "python/ck4inductor/ck_tile_universal_gemm"
+"ck4inductor.ck_tile_grouped_gemm" = "python/ck4inductor/ck_tile_grouped_gemm"
+"ck4inductor.include" = "include"
+"ck4inductor.library" = "library"
+
+[tool.setuptools.package-data]
+"ck4inductor.include" = ["ck/**/*.h", "ck/**/*.hpp"]
+"ck4inductor.library" = [
+    "src/tensor_operation_instance_hcu/gpu/gemm_universal/**/*.hpp",
+    "src/tensor_operation_instance_hcu/gpu/gemm_universal_batched/**/*.hpp",
+    "src/tensor_operation_instance_hcu/gpu/gemm_multi_abd/**/*.hpp",
+    "src/tensor_operation_instance_hcu/gpu/grouped_conv2d_fwd_gfx*/**/*.cpp",
+    "src/tensor_operation_instance_hcu/gpu/grouped_conv2d_fwd_gfx*/**/*.hpp",
+    "src/tensor_operation_instance/gpu/grouped_conv2d_fwd/**/*.cpp",
+    "src/tensor_operation_instance/gpu/grouped_conv2d_fwd/**/*.hpp",
+]
+

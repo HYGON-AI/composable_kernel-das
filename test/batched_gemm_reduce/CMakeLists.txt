@@ -1,0 +1,6 @@
+# Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
+# SPDX-License-Identifier: MIT
+
+add_test_executable(test_batched_gemm_reduce_fp16 batched_gemm_reduce_fp16.cpp)
+target_link_libraries(test_batched_gemm_reduce_fp16 PRIVATE utility)
+target_link_libraries(test_batched_gemm_reduce_fp16 PRIVATE device_batched_gemm_reduce_instance)

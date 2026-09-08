@@ -1,0 +1,5 @@
+# Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
+# SPDX-License-Identifier: MIT
+
+add_example_executable(example_elementwise_permute_4D_fp16 elementwise_permute_4D_fp16.cpp)
+add_example_executable(example_elementwise_permute_4D_fp16_2d elementwise_permute_4D_fp16_2d.cpp)

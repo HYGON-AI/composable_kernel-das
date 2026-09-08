@@ -1,0 +1,2 @@
+add_executable(tile_example_batched_transpose EXCLUDE_FROM_ALL batched_transpose.cpp)
+target_link_libraries(tile_example_batched_transpose PRIVATE utility)

@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2018-2025, Advanced Micro Devices, Inc. All rights reserved.
+
+#pragma once
+
+#include "ck_tile/core.hpp"
+
+namespace ck_tile {
+
+template <typename DataType_,
+          typename BlockTile,
+          typename WarpLayout,
+          bool kPadM_ = false,
+          bool kPadN_ = false>
+struct BatchedTransposeProblem
+{
+    using DataType = remove_cvref_t<DataType_>;
+
+    static constexpr index_t kMPerWarp  = WarpLayout::at(number<0>{});
+    static constexpr index_t kNPerWarp  = WarpLayout::at(number<1>{});
+    static constexpr index_t kMPerBlock = BlockTile::at(number<0>{});
+    static constexpr index_t kNPerBlock = BlockTile::at(number<1>{});
+    static constexpr index_t kBlockSize = kMPerWarp * kNPerWarp * get_warp_size();
+    static constexpr bool kPadM         = kPadM_;
+    static constexpr bool kPadN         = kPadN_;
+
+    static constexpr index_t MaxLoadStoreSize = 16;
+    static constexpr index_t VectorSizeInput =
+        kPadN ? 1 : MaxLoadStoreSize / sizeof(DataType);
+    static constexpr index_t VectorSizeOutput =
+        kPadM ? 1 : MaxLoadStoreSize / sizeof(DataType);
+};
+
+} // namespace ck_tile

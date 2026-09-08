@@ -1,0 +1,14 @@
+# Copyright (c) 2026 Hygon Info Technologies Ltd.
+# SPDX-License-Identifier: MIT
+
+add_instance_library_with_arch(device_fused_conv2d_cb_gfx936_instance
+  "gfx936;gfx938"
+  nhwgc_gkyxc_nhwgk/fused_conv2d_v2r1_f16_bias_f16_f1x1p0_instance.cpp
+  nhwgc_gkyxc_nhwgk/fused_conv2d_v2r1_f16_bias_f16_f1x1s1p0_instance.cpp
+  nhwgc_gkyxc_nhwgk/fused_conv2d_v3_f16_bias_f16_f1x1s2p0_instance.cpp
+  nhwgc_gkyxc_nhwgk/fused_conv2d_v3_f16_bias_f16_f1x1s1p0_instance.cpp
+)
+
+if(TARGET device_fused_conv2d_cb_gfx936_instance)
+  target_compile_options(device_fused_conv2d_cb_gfx936_instance PRIVATE "SHELL: -mls-ooo -mllvm -disable-machine-licm")
+endif()
