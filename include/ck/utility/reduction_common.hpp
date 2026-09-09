@@ -1,5 +1,7 @@
-// Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
+// Copyright (c) 2018-2022, Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+// Modified by Hygon Information Technology Co., Ltd.
 
 #pragma once
 

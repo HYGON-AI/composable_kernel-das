@@ -1,5 +1,6 @@
 # Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 
 set(LAYERNORM2D_FWD_KNOWN_APIS "fwd;bwd")
 set(LAYERNORM2D_FWD_ENABLE_APIS  "fwd" CACHE STRING

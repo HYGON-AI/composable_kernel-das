@@ -1,6 +1,7 @@
 # Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
 # Copyright (c) 2026 Hygon Info Technologies Ltd.
 # SPDX-License-Identifier: MIT
+# Modified by Hygon Information Technology Co., Ltd.
 # generate kernel instances to speed up compilation
 import copy
 import fnmatch

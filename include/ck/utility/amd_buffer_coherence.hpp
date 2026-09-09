@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
+// Modified by Hygon Information Technology Co., Ltd.
 //
 // Adapted for Hygon HCU: coherence enum with HCU-appropriate defaults.
 // HCU architectures (gfx928/gfx936/gfx938) use the simple GLC/SLC coherence model.

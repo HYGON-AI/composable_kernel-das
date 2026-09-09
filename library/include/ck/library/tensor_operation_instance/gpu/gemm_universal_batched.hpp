@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2018-2025, Advanced Micro Devices, Inc. All rights reserved.
+// Modified by Hygon Information Technology Co., Ltd.
 //
 // Adapted for Hygon HCU: gemm_universal_batched wrapper.
 // Redirects to the existing HCU batched_gemm.hpp factory.

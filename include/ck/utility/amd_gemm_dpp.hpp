@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
+// Modified by Hygon Information Technology Co., Ltd.
 //
 // Adapted for Hygon HCU: DPP8 lane-group gemm is NOT available.
 // HCU path uses regular inner_product() without DPP lane sharing.

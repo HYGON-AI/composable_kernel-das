@@ -1,5 +1,6 @@
 # Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
+# Modified by Hygon Information Technology Co., Ltd.
 
 add_executable(client_gemm_add_add_layernorm_naive gemm_add_add_layernorm_naive.cpp)
 target_link_libraries(client_gemm_add_add_layernorm_naive PRIVATE composable_kernel::device_operations)

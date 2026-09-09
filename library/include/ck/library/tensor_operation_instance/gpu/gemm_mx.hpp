@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2018-2025, Advanced Micro Devices, Inc. All rights reserved.
+// Modified by Hygon Information Technology Co., Ltd.
 //
 // Adapted for Hygon HCU: gemm_mx stub.
 // Upstream this depends on DeviceGemmMX + device_gemm_xdl_cshuffle_v3_mx.hpp

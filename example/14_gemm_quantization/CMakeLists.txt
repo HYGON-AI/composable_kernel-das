@@ -1,5 +1,6 @@
 # Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
+# Modified by Hygon Information Technology Co., Ltd.
 
 # dlops
 add_example_executable(example_gemm_dl_quantization_int8 gemm_dl_quantization_int8.cpp)

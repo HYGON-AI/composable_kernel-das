@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX: SPDX-License-Identifier: MIT
 """从 CSV 批量运行通用 grouped GEMM device-args benchmark，并保存复测证据。
 
 用途

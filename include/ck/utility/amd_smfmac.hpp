@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2018-2025, Advanced Micro Devices, Inc. All rights reserved.
+// Modified by Hygon Information Technology Co., Ltd.
 //
 // Hygon HCU: SMF (Sparse Matrix Fused) MFMA is NOT available.
 // Upstream uses __builtin_amdgcn_smfmac_f32_16x16x32_f16/bf16 (gfx94x only).

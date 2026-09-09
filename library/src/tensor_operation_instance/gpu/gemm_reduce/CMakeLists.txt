@@ -1,5 +1,6 @@
 # Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
+# Modified by Hygon Information Technology Co., Ltd.
 
 add_instance_library(device_gemm_reduce_instance
     device_gemm_reduce_xdl_cshuffle_f16_f16_f16_f32_f32_mk_kn_mn_instance.cpp

@@ -1,5 +1,6 @@
 # Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
+# Modified by Hygon Information Technology Co., Ltd.
 
 add_example_executable(example_convnd_bwd_data_xdl_fp16 convnd_bwd_data_xdl_fp16.cpp)
 target_link_libraries(example_convnd_bwd_data_xdl_fp16 PRIVATE utility)

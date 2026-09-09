@@ -1,3 +1,6 @@
+
+// Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+// SPDX: SPDX-License-Identifier: MIT
 #pragma once
 
 #include "ck_tile/core/arch/amd_buffer_addressing.hpp"

@@ -1,5 +1,6 @@
 # Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
+# Modified by Hygon Information Technology Co., Ltd.
 
 add_instance_library(device_batched_gemm_instance
    device_batched_gemm_xdl_f16_f16_f16_gmk_gkn_gmn_instance.cpp

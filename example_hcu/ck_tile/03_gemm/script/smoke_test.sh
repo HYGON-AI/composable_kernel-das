@@ -1,6 +1,7 @@
 #!/bin/bash
 # Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 
 EXE="$(find . -name tile_example_gemm_basic -type f | head -n 1)"
 KNAME=1

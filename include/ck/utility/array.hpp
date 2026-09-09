@@ -1,5 +1,6 @@
-// Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
+// Copyright (c) 2018-2022, Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
+// Modified by Hygon Information Technology Co., Ltd.
 
 #ifndef CK_ARRAY_HPP
 #define CK_ARRAY_HPP

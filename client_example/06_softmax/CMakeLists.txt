@@ -1,5 +1,6 @@
 # Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
+# Modified by Hygon Information Technology Co., Ltd.
 
 add_executable(client_softmax4d softmax4d.cpp)
 target_link_libraries(client_softmax4d PRIVATE composable_kernel::device_operations)

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2018-2024, Advanced Micro Devices, Inc. All rights reserved.
+// Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 
 #pragma once
 

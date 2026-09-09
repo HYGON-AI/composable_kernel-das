@@ -1,5 +1,6 @@
 # Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 
 # ONLY XDL_KERNELS
 set(DEVICE_CONTRACTION_SCALE_INSTANCES)

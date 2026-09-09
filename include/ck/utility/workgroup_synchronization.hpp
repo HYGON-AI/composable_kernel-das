@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
+// Modified by Hygon Information Technology Co., Ltd.
 //
 // Adapted for Hygon HCU: cross-workgroup synchronization using global
 // memory atomics. Uses only standard HIP atomics (atomicCAS, atomicSub,

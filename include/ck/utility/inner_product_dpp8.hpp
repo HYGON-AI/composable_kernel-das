@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
+// Modified by Hygon Information Technology Co., Ltd.
 //
 // Adapted for Hygon HCU: DPP8 instructions (v_dot2c_f32_f16_dpp, __builtin_amdgcn_mov_dpp8)
 // are NOT available on HCU. HCU path falls back to regular inner_product().

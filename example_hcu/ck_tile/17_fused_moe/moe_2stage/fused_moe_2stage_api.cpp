@@ -1,3 +1,6 @@
+
+// Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+// SPDX: SPDX-License-Identifier: MIT
 #include "fused_moe_2stage.hpp"
 #include "fused_moegemm_2stage.hpp"
 

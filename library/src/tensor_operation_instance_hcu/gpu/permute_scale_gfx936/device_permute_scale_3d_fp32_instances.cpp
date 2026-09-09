@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2024, Advanced Micro Devices, Inc. All rights reserved.
+// Modified by Hygon Information Technology Co., Ltd.
 
 #include "ck/library/tensor_operation_instance/gpu/permute_scale/device_permute_scale_instances.hpp"
 #include "ck/library/tensor_operation_instance/add_device_operation_instance.hpp"

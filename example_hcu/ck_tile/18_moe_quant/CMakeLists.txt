@@ -1,5 +1,6 @@
 # Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 
 function (add_moe_quant_example TARGET_NAME MAIN_SRC)
     message("adding ${TARGET_NAME}")

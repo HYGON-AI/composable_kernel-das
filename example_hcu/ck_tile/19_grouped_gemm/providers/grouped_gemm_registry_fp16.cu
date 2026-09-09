@@ -3,5 +3,7 @@
 // device-args registry/launcher，不重复生成旧 host-descriptor C ABI。
 // 运行时由 pure selector 在 gfx936 V3、gfx938 MLS 和通用 V4 预编译候选中选择；
 // 不满足大块/对齐条件时仍落到 V4 预编译 fallback。
+// Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+// SPDX: SPDX-License-Identifier: MIT
 #define CK_TILE_GROUPED_GEMM_DEVICE_ARGS_REGISTRY_ONLY
 #include "instances/grouped_gemm_fp16.cpp"

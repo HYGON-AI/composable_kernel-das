@@ -1,5 +1,6 @@
 # Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
+# Modified by Hygon Information Technology Co., Ltd.
 
 function(add_instance_library INSTANCE_NAME)
     message("adding instance ${INSTANCE_NAME}")

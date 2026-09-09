@@ -1,3 +1,6 @@
+
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX: SPDX-License-Identifier: MIT
 add_executable(tile_example_topk_softmax EXCLUDE_FROM_ALL topk_softmax.cpp topk_softmax_api.cpp)
 target_include_directories(tile_example_topk_softmax PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/)
 target_link_libraries(tile_example_topk_softmax PRIVATE utility)

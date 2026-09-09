@@ -1,5 +1,6 @@
 // Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
 // SPDX-License-Identifier: MIT
+// Modified by Hygon Information Technology Co., Ltd.
 //
 // Hygon HCU adaptation: HCU fast-path macros added (CK_FP8_HCU_CVT_FAST_PATH).
 // AMD builtins are gated behind existing architecture guards (gfx94x/gfx95x/gfx12x).

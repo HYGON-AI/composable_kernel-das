@@ -1,5 +1,6 @@
 # Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
+# Modified by Hygon Information Technology Co., Ltd.
 
 set(CONV2D_PERLAYER_QUANT_SRC
     conv2d_fwd/device_conv2d_dl_perlayer_quantization_int8_instance.cpp

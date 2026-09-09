@@ -1,3 +1,6 @@
+
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX: SPDX-License-Identifier: MIT
 add_executable(tile_example_elementwise_add EXCLUDE_FROM_ALL elementwise_add.cpp)
 target_link_libraries(tile_example_elementwise_add PRIVATE utility)
 

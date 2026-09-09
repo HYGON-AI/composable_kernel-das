@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2025, Advanced Micro Devices, Inc. All rights reserved.
+// Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 
 // The gfx938 large-shape default below uses the validated K32 single-stage MLS
 // pipeline. Keep these definitions source-local so unrelated module_cpp_api

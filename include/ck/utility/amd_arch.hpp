@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
+// Modified by Hygon Information Technology Co., Ltd.
 
 #pragma once
 

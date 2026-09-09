@@ -1,3 +1,6 @@
+
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX: SPDX-License-Identifier: MIT
 function(add_instance_library INSTANCE_NAME)
     message("adding instance ${INSTANCE_NAME}")
     add_library(${INSTANCE_NAME} OBJECT ${ARGN})

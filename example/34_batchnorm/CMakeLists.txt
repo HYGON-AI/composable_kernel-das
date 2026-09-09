@@ -1,5 +1,6 @@
 # Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
+# Modified by Hygon Information Technology Co., Ltd.
 
 add_example_executable(example_batchnorm_forward_training batchnorm_forward_training_nhwc.cpp)
 add_example_executable(example_batchnorm_forward_inferring batchnorm_forward_inferring_nhwc.cpp)

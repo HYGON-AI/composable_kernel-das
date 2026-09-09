@@ -1,5 +1,6 @@
 # Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
+# Modified by Hygon Information Technology Co., Ltd.
 
 add_test_executable(test_gemm_fp32 gemm_fp32.cpp)
 target_link_libraries(test_gemm_fp32 PRIVATE utility)

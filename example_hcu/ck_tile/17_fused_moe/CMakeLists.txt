@@ -1,3 +1,6 @@
+
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX: SPDX-License-Identifier: MIT
 set(TILE_EXAPMLE_FUSED_MOE "tile_example_fused_moe")
 # not using add_example_executable() to add this target, since we don't want this to have
 # to be included in "make all/install/check"
