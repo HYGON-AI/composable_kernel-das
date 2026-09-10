@@ -26,7 +26,7 @@ COMMON_ARGS='-v=1'
 
 run_exe() {
     set +ex
-    $EXE $@
+    $EXE "$@"
     local ret=$?
     if [ $ret -ne 0 ] ; then
         echo "$EXE_NAME $*" >> $CURR_FAILS_FILE
@@ -35,12 +35,12 @@ run_exe() {
 }
 
 test_h_s_mask() {
-    run_exe -b=1 -h=4 -h_k=2 -s=259                         $@
-    run_exe -b=2 -h=2        -s=516 -s_k=253                $@
-    run_exe -b=1 -h=4 -h_k=1 -s=500 -s_k=251 -mask=1        $@
-    run_exe -b=1 -h=2        -s=900 -s_k=258 -mask=2        $@
-    run_exe -b=2 -h=1        -s=987 -s_k=219 -mask=t:128,30 $@
-    run_exe -b=2 -h=3 -h_k=1 -s=244 -s_k=499 -mask=b:4,35   $@
+    run_exe -b=1 -h=4 -h_k=2 -s=259                         "$@"
+    run_exe -b=2 -h=2        -s=516 -s_k=253                "$@"
+    run_exe -b=1 -h=4 -h_k=1 -s=500 -s_k=251 -mask=1        "$@"
+    run_exe -b=1 -h=2        -s=900 -s_k=258 -mask=2        "$@"
+    run_exe -b=2 -h=1        -s=987 -s_k=219 -mask=t:128,30 "$@"
+    run_exe -b=2 -h=3 -h_k=1 -s=244 -s_k=499 -mask=b:4,35   "$@"
 }
 
 set -x

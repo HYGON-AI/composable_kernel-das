@@ -36,7 +36,7 @@ done
 done
 
 # The following cases uses two pass pipeline which doesn't support quant epilogue. 
-for fquant in ""
+for fquant in "" ; do
 for pr_i in "fp16" "bf16" ; do
 for fadd in "0" "1"; do
 $EXE -prec_i=$pr_i -fadd=$fadd $fquant -m=1   -n=10547

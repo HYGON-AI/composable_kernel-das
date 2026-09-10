@@ -56,7 +56,7 @@ done
 
 run_exe() {
     set +ex
-    $EXE $@
+    $EXE "$@"
     local ret=$?
     if [ $ret -ne 0 ] ; then
         echo "$EXE_NAME $*" >> $CURR_FAILS_FILE
