@@ -620,11 +620,11 @@ pipeline {
         string(
             name: 'COMPILER_VERSION', 
             defaultValue: '', 
-            description: 'Specify which version of compiler to use: release, amd-stg-open, or leave blank (default).')
+            description: 'Specify which version of compiler to use: release, or leave blank (default).') // amd-stg-open is the fallback compiler branch
         string(
             name: 'COMPILER_COMMIT', 
             defaultValue: '', 
-            description: 'Specify which commit of compiler branch to use: leave blank to use the latest commit, or use 5541927df00eabd6a110180170eca7785d436ee3 (default) commit of amd-stg-open branch.')
+            description: 'Specify which commit of compiler branch to use: leave blank to use the latest commit') // or use 5541927df00eabd6a110180170eca7785d436ee3 (default) commit of amd-stg-open branch.
         string(
             name: 'BUILD_COMPILER', 
             defaultValue: 'hipcc', 
