@@ -9,6 +9,12 @@ CK utilizes two concepts to achieve performance portability and code maintainabi
 
 ![ALT](/docs/data/ck_component.png "CK Components")
 
+## upstream project
+composable_kernel
+Homepage: https://github.com/ROCm/composable_kernel.git
+Commit 4feebedd413212fcd455da4a2bfcb40e9e6cab5a
+<!-- Modified by Hygon Information Technology Co., Ltd. -->
+
 ## Code Structure
 Current CK library are structured into 4 layers:
 * "Templated Tile Operators" layer
