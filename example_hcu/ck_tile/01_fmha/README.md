@@ -1,3 +1,6 @@
+<!-- Copyright (c) 2026 Hygon Information Technology Co., Ltd. -->
+<!-- SPDX-License-Identifier: MIT -->
+
 # fused multi-head attention
 
 This folder contains example for fmha(fused multi-head attention) using ck_tile tile-programming implementation. It is a good example to demonstrate the usage of tile-programming API, as well as illustrate the new approach to construct a kernel template and instantiate it(them) while keeping compile time fast.
@@ -26,6 +29,34 @@ This example provides recipes for `tile_example_fmha_fwd`, `tile_example_fmha_bw
 >
 > The remaining arguments are optional and are passed through to CMake.
 > E.g. `-G Ninja` specifies ninja as the build system.
+
+## HCU extended forward validation
+
+The gfx936/gfx938 generators provide FP16/BF16 append-KV, split-KV and paged-KV
+prefill instances. QK uses MMAC 16x64x32; PV uses 16x32x64 with an LDS probability
+layout conversion. Split/paged prefill use head-dimension buckets 64 and 128.
+
+To enable the extended APIs in an existing HCU CMake build, configure from the
+repository root (retain the compiler and toolchain settings of that build):
+
+```bash
+cmake -S . -B build \
+  -DFMHA_FWD_ENABLE_APIS=all \
+  -DFMHA_FWD_RECEIPT=4 -DFMHA_FWD_OPT_DIM=64,128 \
+  '-DFMHA_FWD_KERNEL_FILTER=*_psddv_nlogits_nbias_nmask_nlse_*,*_batch*_psdv_*@*_batch*_psskddv_*_nsink,*_psskddv*,*_pssk_*_nskip_*_nsink'
+cmake --build build --target tile_example_fmha_fwd -j 16
+python -B example_hcu/ck_tile/01_fmha/test_hcu_codegen.py
+python -B example_hcu/ck_tile/01_fmha/test_hcu_extended_fwd.py \
+  build/bin/tile_example_fmha_fwd --output build/fmha_validation
+```
+
+The numerical suite checks 104 cases against the runner's CPU reference,
+including actual API names to detect fallback. It covers both data types and head
+buckets, uneven/empty splits, GQA decode, causal/sliding masks, bias, softcap,
+head-dimension tails for split-KV, group-mode paged prefill, cache indirection,
+append-KV and both rotary layouts. The paged runner requires page sizes divisible
+by 128. The selected receipt excludes sink and FP8; this suite does not validate
+backward or performance.
 
 ## kernel
 The kernel template is `fmha_fwd_kernel.hpp`, this is the grid-wise op in old ck_tile's terminology. We put it here purposely, to demonstrate one can construct a kernel by using various internal component from ck_tile. We may still have an implementation under ck_tile's include path (in the future) for the kernel template.

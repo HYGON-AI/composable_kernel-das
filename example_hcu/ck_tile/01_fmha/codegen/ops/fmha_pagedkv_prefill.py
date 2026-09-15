@@ -1,5 +1,8 @@
 # Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# Modified by Hygon Information Technology Co., Ltd.
+
 # generate kernel instances to speed up compilation
 import copy
 import fnmatch
@@ -112,7 +115,7 @@ float fmha_fwd_pagedkv_<trait_{F_idx}, {F_arch.tag}>(const ck_tile::stream_confi
     auto [kargs, grids] = fmha_fwd_pagedkv_create_kargs_and_grids<k_>(a);
     const dim3 blocks                      = k_::BlockSize();
     constexpr ck_tile::index_t kBlockPerCu = k_::kBlockPerCu;
-    return ck_tile::launch_kernel(s, ck_tile::make_kernel<kBlockPerCu, {F_arch.tag}>(k_{{}}, grids, blocks, 0, kargs));
+    return ck_tile::launch_kernel(s, ck_tile::make_kernel<CK_TILE_MAX_THREAD_PER_BLOCK, kBlockPerCu>(k_{{}}, grids, blocks, 0, kargs));
 }}
 
 #endif // !defined(__HIP_DEVICE_COMPILE__) || ({F_arch.preprocessor_check})
@@ -392,7 +395,8 @@ class FmhaFwdApiPool:
                     per_hdim_case += FMHA_FWD_API_PER_HDIM_CASE.format(
                         F_if=if_(i_hdim),
                         F_hdim=hdim,
-                        F_hdim_v=trait.bn1,
+                        # HCU tiles V across multiple PV GEMMs (N1=32).
+                        F_hdim_v=hdim if arch.name in ("gfx936", "gfx938") else trait.bn1,
                         F_inner_dispatch=indent(inners),
                     )
                 per_dtypes += FMHA_FWD_API_PER_DTYPE.format(
@@ -597,6 +601,23 @@ class KernelComponentFactoryGfx9(KernelComponentFactoryBase):
             return None
 
 
+class KernelComponentFactoryGfx936(KernelComponentFactoryGfx9):
+    arch = ArchTrait("gfx936", tag="void")
+
+    @staticmethod
+    def get_hdim_tile_size_dict(dtype: str) -> Optional[dict]:
+        if dtype not in ("fp16", "bf16"):
+            return None
+        return {
+            "64": FmhaFwdTileSize(16, 64, 32, 32, 64, 64, 1, 1, 1, 1, 1, 1, 16, 64, 32, 16, 32, 64, -1),
+            "128": FmhaFwdTileSize(16, 64, 32, 32, 64, 128, 1, 1, 1, 1, 1, 1, 16, 64, 32, 16, 32, 64, -1),
+        }
+
+
+class KernelComponentFactoryGfx938(KernelComponentFactoryGfx936):
+    arch = ArchTrait("gfx938", tag="void")
+
+
 class KernelComponentFactoryGfx11(KernelComponentFactoryBase):
     arch = ArchTrait("gfx11")
 
@@ -666,6 +687,10 @@ class KernelComponentFactoryGfx125(KernelComponentFactoryBase):
 def get_factory(target: str):
     # Place more specific architectures first
 
+    if target.startswith("gfx936"):
+        return KernelComponentFactoryGfx936
+    if target.startswith("gfx938"):
+        return KernelComponentFactoryGfx938
     if target.startswith("gfx9"):
         return KernelComponentFactoryGfx9
     if target.startswith("gfx11"):
@@ -704,10 +729,11 @@ def get_fwd_blobs(
                     # NOTE: this is used to speedup deepseek prefill case, we don't gen training
                     if pipeline.F_bias != "no" or pipeline.F_lse == "t":
                         continue
-                # logits_soft_cap is only allowed if no bias
+                # The HCU pipeline applies softcap before bias.
                 if not (
                     (pipeline.F_logits == "t" and pipeline.F_bias == "no")
                     or pipeline.F_logits == "f"
+                    or factory.arch.name in ("gfx936", "gfx938")
                 ):
                     continue
                 k = FmhaFwdKernel(

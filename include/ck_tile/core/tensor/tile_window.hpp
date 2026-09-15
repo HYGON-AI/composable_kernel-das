@@ -343,30 +343,41 @@ struct tile_window_with_static_distribution
                         0,
                         bool_constant<oob_conditional_check>{},
                         bool_constant<swizzle>{});
-#if 0
-                // write into distributed tensor
-                static_for<0, Traits::ScalarPerVector, 1>{}([&](auto j) {
-                    constexpr auto idx_ys = generate_tuple(
-                        [&](auto jj) {
-                            return jj == Traits::VectorDimY ? (idx_ys_start[jj] + j)
-                                                            : idx_ys_start[jj];
-                        },
-                        number<NDimY>{});
-
-                    constexpr index_t d =
-                        tile_dstr.get_ys_to_d_descriptor().calculate_offset(idx_ys);
-
-                    dst_tensor.get_thread_buffer().template at<d>() =
-                        vec_value.template get_as<DataType>()[j];
-                });
-#else
                 constexpr index_t d =
                     tile_dstr.get_ys_to_d_descriptor().calculate_offset(idx_ys_start);
-                static_assert(d % Traits::ScalarPerVector == 0);
-
-                dst_tensor.get_thread_buffer().template get_as<vector_t>()(
-                    number<d / Traits::ScalarPerVector>{}) = bit_cast<vector_t>(vec_value);
-#endif
+                constexpr bool contiguous = [&]() {
+                    bool result = d % Traits::ScalarPerVector == 0;
+                    static_for<0, Traits::ScalarPerVector, 1>{}([&](auto j) {
+                        constexpr auto idx_ys = generate_tuple(
+                            [&](auto jj) {
+                                return jj == Traits::VectorDimY ? (idx_ys_start[jj] + j)
+                                                                : idx_ys_start[jj];
+                            },
+                            number<NDimY>{});
+                        result &= tile_dstr.get_ys_to_d_descriptor().calculate_offset(idx_ys) == d + j;
+                    });
+                    return result;
+                }();
+                if constexpr(contiguous)
+                {
+                    dst_tensor.get_thread_buffer().template get_as<vector_t>()(
+                        number<d / Traits::ScalarPerVector>{}) = bit_cast<vector_t>(vec_value);
+                }
+                else
+                {
+                    static_for<0, Traits::ScalarPerVector, 1>{}([&](auto j) {
+                        constexpr auto idx_ys = generate_tuple(
+                            [&](auto jj) {
+                                return jj == Traits::VectorDimY ? (idx_ys_start[jj] + j)
+                                                                : idx_ys_start[jj];
+                            },
+                            number<NDimY>{});
+                        constexpr index_t offset =
+                            tile_dstr.get_ys_to_d_descriptor().calculate_offset(idx_ys);
+                        dst_tensor.get_thread_buffer().template at<offset>() =
+                            vec_value.template get_as<DataType>()[j];
+                    });
+                }
                 // move thread coordinate
                 if constexpr(iCoordAccess != (NumAccessPerCoord - 1))
                 {
