@@ -26,6 +26,7 @@
 #include "ck_tile/host/reference/reference_fused_moe.hpp"
 #include "ck_tile/host/reference/reference_gemm.hpp"
 #include "ck_tile/host/reference/reference_im2col.hpp"
+#include "ck_tile/host/reference/reference_jenga.hpp"
 #include "ck_tile/host/reference/reference_layernorm2d_fwd.hpp"
 #include "ck_tile/host/reference/reference_moe_sorting.hpp"
 #include "ck_tile/host/reference/reference_permute.hpp"

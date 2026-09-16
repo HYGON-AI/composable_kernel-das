@@ -1,6 +1,7 @@
 
 # Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 # SPDX: SPDX-License-Identifier: MIT
+# Modified by Hygon Information Technology Co., Ltd.
 include_directories(AFTER
   ${CMAKE_CURRENT_LIST_DIR}
 )
@@ -26,6 +27,7 @@ add_subdirectory(17_fused_moe)
 add_subdirectory(18_moe_quant)
 add_subdirectory(19_gemm_multi_d)
 add_subdirectory(19_grouped_gemm)
+add_subdirectory(20_jenga)
 add_subdirectory(21_elementwise)
 add_subdirectory(35_batched_transpose)
 add_subdirectory(38_block_scale_gemm)
