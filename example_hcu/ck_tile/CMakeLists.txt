@@ -33,3 +33,5 @@ add_subdirectory(21_gdn)
 add_subdirectory(35_batched_transpose)
 add_subdirectory(38_block_scale_gemm)
 add_subdirectory(22_sla)
+
+add_subdirectory(23_unified_attention)

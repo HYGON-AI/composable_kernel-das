@@ -39,3 +39,5 @@
 #include "ck_tile/host/stream_config.hpp"
 #include "ck_tile/host/timer.hpp"
 #include "ck_tile/host/reference/reference_sla.hpp"
+
+#include "ck_tile/host/reference/reference_unified_attention.hpp"
