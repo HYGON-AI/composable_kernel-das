@@ -1,6 +1,5 @@
 <!-- Copyright (c) 2026 Hygon Information Technology Co., Ltd. -->
 <!-- SPDX-License-Identifier: MIT -->
-<!-- Modified by Hygon Information Technology Co., Ltd. -->
 # HCU ck_tile SLA 稀疏线性注意力
 
 本目录提供 SLA (Sparse Linear Attention) 的独立 ck_tile 示例，包含 FWD、BWD 以及 GPU reference。当前支持 BF16、FP16、head dimension 128 和 64×64 (对于 S=75648 等) / 128×64 (对于 S=18048) 稀疏 block。

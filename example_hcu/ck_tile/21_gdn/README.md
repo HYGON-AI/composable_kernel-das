@@ -1,6 +1,5 @@
 <!-- Copyright (c) 2026 Hygon Information Technology Co., Ltd. -->
 <!-- SPDX-License-Identifier: MIT -->
-<!-- Modified by Hygon Information Technology Co., Ltd. -->
 # HCU ck_tile GDN
 
 本目录提供 Gated Delta Network（GDN）的独立 CK Tile 示例，包括 Prefill、
@@ -322,7 +321,6 @@ bash example_hcu/ck_tile/21_gdn/benchmark_gdn_cases.sh \
 本实现基于 OpenDAS/composable_kernel 的 GDN 实现 `2938dbb`，并包含
 `1c15e2b` 的配置维度修正（合入节点 `aee604b`）。原始 CK 来源为
 ROCm/composable_kernel（MIT）；原始版权声明及 LICENSE 保留。
-Modified by Hygon Information Technology Co., Ltd.
 
 本次迁移补齐 FP16 定长部分 chunk 的边界处理，并使 `use_g=0` 在
 cumsum、KKT、recompute、state、output 各阶段采用一致的中性 scalar gate。

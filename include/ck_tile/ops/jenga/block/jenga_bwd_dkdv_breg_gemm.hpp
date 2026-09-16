@@ -1,5 +1,4 @@
 // Copyright (c) 2026 Hygon Information Technology Co., Ltd.
-// Modified by Hygon Information Technology Co., Ltd.
 // SPDX-License-Identifier: MIT
 // Copied from the fast fwd CK path and renamed for the bwd dK/dV experiment.
 

@@ -1,6 +1,5 @@
 # Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 # SPDX-License-Identifier: MIT
-# Modified by Hygon Information Technology Co., Ltd.
 add_example_executable(tile_example_gdn_prefill gdn_prefill.cpp)
 target_sources(tile_example_gdn_prefill PRIVATE
   prefill/gdn_prefill_launch.cpp

@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 # SPDX-License-Identifier: MIT
-# Modified by Hygon Information Technology Co., Ltd.
 # Run on a selected HCU: bash test_gdn_correctness.sh /path/to/build/bin
 set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"

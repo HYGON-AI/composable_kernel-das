@@ -1,5 +1,4 @@
 // Copyright (c) 2026 Hygon Information Technology Co., Ltd.
-// Modified by Hygon Information Technology Co., Ltd.
 // SPDX-License-Identifier: MIT
 #include "sla_fwd.hpp"
 #include "sla_fwd_runner_impl.hpp"

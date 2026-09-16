@@ -1,6 +1,5 @@
 # Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 # SPDX-License-Identifier: MIT
-# Modified by Hygon Information Technology Co., Ltd.
 add_example_executable(tile_example_sla_fwd sla_fwd.cpp)
 target_sources(tile_example_sla_fwd PRIVATE
   instances/sla_fwd_bf16_instance.cpp

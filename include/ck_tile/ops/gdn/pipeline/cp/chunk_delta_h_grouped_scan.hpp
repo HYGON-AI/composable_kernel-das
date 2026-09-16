@@ -1,6 +1,5 @@
 // Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 // SPDX-License-Identifier: MIT
-// Modified by Hygon Information Technology Co., Ltd.
 #pragma once
 
 #include "ck_tile/ops/gdn/pipeline/cp/chunk_delta_h_wave_reg_pipeline.hpp"

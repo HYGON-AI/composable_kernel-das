@@ -1,5 +1,4 @@
 // Copyright (c) 2026 Hygon Information Technology Co., Ltd.
-// Modified by Hygon Information Technology Co., Ltd.
 // SPDX-License-Identifier: MIT
 
 // Keep dQ in its own translation unit: gfx936 needs the extended VGPR mode for

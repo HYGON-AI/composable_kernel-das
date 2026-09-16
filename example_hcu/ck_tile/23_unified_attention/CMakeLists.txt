@@ -1,6 +1,4 @@
 # Copyright (c) 2026 Hygon Information Technology Co., Ltd.
-# Modified by Hygon Information Technology Co., Ltd.
-# Copyright (c) 2026 Hygon Info Technologies Ltd.
 # SPDX-License-Identifier: MIT
 
 add_executable(tile_example_unified_attention_2d

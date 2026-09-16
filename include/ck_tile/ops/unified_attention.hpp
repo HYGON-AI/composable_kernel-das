@@ -1,6 +1,5 @@
 // Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 // SPDX-License-Identifier: MIT
-// Modified by Hygon Information Technology Co., Ltd.
 #pragma once
 
 // Single public entry point. D192, D256 and 3D currently contain translation-

@@ -1,6 +1,5 @@
 // Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 // SPDX-License-Identifier: MIT
-// Modified by Hygon Information Technology Co., Ltd.
 #pragma once
 #include <ck_tile/core.hpp>
 #include "ck_tile/ops/gdn/pipeline/chunk_delta_h_scan_policy.hpp"

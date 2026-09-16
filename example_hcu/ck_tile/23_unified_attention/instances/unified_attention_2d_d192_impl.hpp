@@ -1,9 +1,7 @@
 // Copyright (c) 2026 Hygon Information Technology Co., Ltd.
-// Modified by Hygon Information Technology Co., Ltd.
 // SPDX-License-Identifier: MIT
 #pragma once
 
-// Copyright (c) 2026 Hygon Info Technologies Ltd.
 
 #include "ck_tile/host.hpp"
 #include "ck_tile/ops/unified_attention.hpp"

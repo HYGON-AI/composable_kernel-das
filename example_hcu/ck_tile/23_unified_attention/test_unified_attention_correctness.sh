@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 # SPDX-License-Identifier: MIT
-# Modified by Hygon Information Technology Co., Ltd.
 set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 bin="${1:-${BUILD_DIR:-$repo_root/build}/bin}"

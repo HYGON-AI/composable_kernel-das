@@ -1,6 +1,5 @@
 // Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 // SPDX-License-Identifier: MIT
-// Modified by Hygon Information Technology Co., Ltd.
 #pragma once
 
 #include "ck_tile/ops/sla/pipeline/sla_fused_linear_attn_problem.hpp"

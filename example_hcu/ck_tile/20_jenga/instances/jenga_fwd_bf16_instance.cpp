@@ -1,5 +1,4 @@
 // Copyright (c) 2026 Hygon Information Technology Co., Ltd.
-// Modified by Hygon Information Technology Co., Ltd.
 // SPDX-License-Identifier: MIT
 #include "jenga_fwd.hpp"
 #include "jenga_fwd_runner_impl.hpp"

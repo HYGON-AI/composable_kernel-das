@@ -1,6 +1,5 @@
 <!-- Copyright (c) 2026 Hygon Information Technology Co., Ltd. -->
 <!-- SPDX-License-Identifier: MIT -->
-<!-- Modified by Hygon Information Technology Co., Ltd. -->
 # Unified Attention
 
 本示例将 Unified Attention 集成为 CK Tile 公共算子，并分别生成 2D unified_attention 与

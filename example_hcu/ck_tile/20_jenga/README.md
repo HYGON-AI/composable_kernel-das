@@ -1,6 +1,5 @@
 <!-- Copyright (c) 2026 Hygon Information Technology Co., Ltd. -->
 <!-- SPDX-License-Identifier: MIT -->
-<!-- Modified by Hygon Information Technology Co., Ltd. -->
 # HCU ck_tile Jenga 稀疏注意力
 
 本目录提供 Jenga block-sparse attention 的独立 ck_tile 示例，包含 FWD、BWD
@@ -172,4 +171,3 @@ FP16 正确性测试示例：
 MR !6 的最终重构版本 `0149068aeab02ce9d6665de41f3337d6282d3fff`，
 包含 `362ca48` 的 CK Tile ops 迁移及后续配置整理。
 原始 CK 来源为 ROCm/composable_kernel（MIT）；所有原始版权声明保留。
-Modified by Hygon Information Technology Co., Ltd.

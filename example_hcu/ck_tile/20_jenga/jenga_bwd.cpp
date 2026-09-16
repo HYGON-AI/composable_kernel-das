@@ -1,5 +1,4 @@
 // Copyright (c) 2026 Hygon Information Technology Co., Ltd.
-// Modified by Hygon Information Technology Co., Ltd.
 // SPDX-License-Identifier: MIT
 #include "ck_tile/host.hpp"
 #include "ck_tile/ops/fmha/pipeline/block_fmha_bwd_pipeline_problem.hpp"
