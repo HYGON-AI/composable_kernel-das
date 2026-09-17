@@ -1,3 +1,7 @@
+// Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
+// SPDX-License-Identifier: MIT
+// Modified by Hygon Information Technology Co., Ltd.
+
 #pragma once
 
 static bool run_gemm(const ProblemSize& problem_size, const ExecutionConfig& config)
