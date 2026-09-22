@@ -760,9 +760,13 @@ CK_TILE_HOST_DEVICE float fp8_to_float_raw(fp8_raw_t x)
 #if CK_TILE_FP8_CVT_DEVICE
     float fval;
     uint32_t i32val = static_cast<uint32_t>(x);
-    // fval = __builtin_hcu_cvt_f32_fp8(i32val, true, 0, 0);
-    // fval            = __builtin_amdgcn_cvt_f32_fp8(i32val, 0);
+#if defined(__gfx938__)
+    // DTK 26.10 AICC encodes FP8 SDWA as BF8 on gfx938. The HIP builtin
+    // with the same selectors as the HIP headers emits the correct FP8 e32 form.
+    fval = __builtin_hcu_cvt_f32_fp8(i32val, false, 0, 0);
+#else
     asm volatile("v_cvt_f32_fp8 %0, %1 src0_sel:BYTE_0" : "=v"(fval) : "v"(i32val));
+#endif
     return fval;
 #else
     return impl::run_cast_from_f8<fp8_t, float>(bit_cast<fp8_t>(x));
