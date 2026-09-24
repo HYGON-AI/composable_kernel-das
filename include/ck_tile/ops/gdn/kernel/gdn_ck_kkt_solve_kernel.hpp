@@ -22,7 +22,7 @@ struct GdnKktSolveFwdKernelArg
     bool is_varlen;
 };
 
-template <typename Policy, bool MaskKRows, int NumWarps = 4>
+template <typename Policy, bool MaskKRows, int NumWarps = 4, bool SplitHeads = false>
 struct GdnKktSolveFwdKernel
 {
     using Kargs    = GdnKktSolveFwdKernelArg;
@@ -48,7 +48,7 @@ struct GdnKktSolveFwdKernel
 
     CK_TILE_HOST static constexpr dim3 GridSize(const Kargs& arg)
     {
-        return dim3(static_cast<unsigned int>(arg.H),
+        return dim3(static_cast<unsigned int>(SplitHeads ? arg.HV : arg.H),
                     static_cast<unsigned int>(
                         arg.is_varlen ? arg.num_chunks
                                       : (arg.T + arg.BT - 1) / arg.BT),
@@ -83,10 +83,12 @@ struct GdnKktSolveFwdKernel
         auto* k_typed = reinterpret_cast<const DataType*>(arg.k);
         auto* A_typed = reinterpret_cast<DataType*>(arg.A);
 
-        const int ih = blockIdx.x;
+        const int ratio = arg.HV / arg.H;
+        const int ih = SplitHeads ? blockIdx.x / ratio : blockIdx.x;
+        const int vh_offset = SplitHeads ? blockIdx.x % ratio : 0;
         Pipeline{}(
             k_typed, arg.g_cum, arg.beta, A_typed,
-            tc, ih, 0,
+            tc, ih, vh_offset,
             token_end, arg.H, arg.HV,
             arg.stride_k_t, arg.stride_g_t, arg.stride_A_t,
             arg.use_exp2,
@@ -94,7 +96,7 @@ struct GdnKktSolveFwdKernel
     }
 };
 
-template <typename Policy, int NumWarps>
+template <typename Policy, int NumWarps, bool SplitHeads = false>
 struct GdnKktSolveFwdInvoker
 {
     static_assert(NumWarps == 1 || NumWarps == 2 || NumWarps == 4);
@@ -112,7 +114,7 @@ struct GdnKktSolveFwdInvoker
         int num_chunks = 0,
         bool is_varlen = false)
     {
-        using Kernel = GdnKktSolveFwdKernel<Policy, true, NumWarps>;
+        using Kernel = GdnKktSolveFwdKernel<Policy, true, NumWarps, SplitHeads>;
         auto kargs = Kernel::MakeKargs(k,
                                       g_cum,
                                       beta,

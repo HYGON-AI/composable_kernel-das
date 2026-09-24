@@ -12,4 +12,8 @@ inline constexpr int kSupportedHeadDim = 128;
 void launch_bf16(const GdnFusedRecurrentKargs&, hipStream_t);
 void launch_fp16(const GdnFusedRecurrentKargs&, hipStream_t);
 
+// Raw FP32 beta is transformed by sigmoid inside the recurrence kernel.
+void launch_bf16_raw_beta(const GdnFusedRecurrentKargs&, const float* raw_beta, hipStream_t);
+void launch_fp16_raw_beta(const GdnFusedRecurrentKargs&, const float* raw_beta, hipStream_t);
+
 } // namespace gdn_decode_example

@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 // SPDX-License-Identifier: MIT
 #pragma once
+#include "ck_tile/ops/gdn/gdn_numeric.hpp"
 //
 // Split GDN recompute_w_u CK pipeline.
 //
@@ -215,6 +216,20 @@ struct GdnRecomputeWUPipeline
             multi_index<2>{0, 0},
             a_tile.get_tile_distribution());
         load_tile(a_tile, a_win);
+        if constexpr(std::is_same_v<DataType, half_t>)
+        {
+            constexpr auto spans = remove_cvref_t<decltype(a_tile)>::get_distributed_spans();
+            sweep_tile_span(spans[number<0>{}], [&](auto idx0) {
+                sweep_tile_span(spans[number<1>{}], [&](auto idx1) {
+                    constexpr auto dstr_idx = make_tuple(idx0, idx1);
+                    const auto tile_idx =
+                        get_x_indices_from_distributed_indices(a_tile.get_tile_distribution(), dstr_idx);
+                    if(tile_idx.at(number<0>{}) >= valid_rows ||
+                       tile_idx.at(number<1>{}) >= valid_rows)
+                        a_tile(dstr_idx) = DataType{0};
+                });
+            });
+        }
         return a_tile;
     }
 
@@ -233,7 +248,7 @@ struct GdnRecomputeWUPipeline
                 if(k < k_end)
                 {
                     const float a = type_convert<float>(a_tile(dstr_idx));
-                    a_tile(dstr_idx) = type_convert<DataType>(a * smem.scale_lds[k]);
+                    a_tile(dstr_idx) = gdn_type_convert<DataType>(a * smem.scale_lds[k]);
                 }
             });
         });
@@ -268,6 +283,9 @@ struct GdnRecomputeWUPipeline
         return RecomputeBlockGemm{}.LoadBByDsreadm(rhs_t_view);
     }
 
+    // FP16 and BF16 use different K iteration counts, but the same logical
+    // C output distribution. Reuse the wave transpose only while that contract
+    // holds. The caller keeps the barrier protecting the next RHS LDS write.
     template <typename OutTile>
     CK_TILE_DEVICE void store_output_tile(const OutTile& out,
                                           DataType* __restrict__ out_global,
@@ -275,36 +293,15 @@ struct GdnRecomputeWUPipeline
                                           int ivh,
                                           int col,
                                           int stride_out_t,
-                                          SharedStorage& smem) const
+                                          SharedStorage&,
+                                          int valid_rows = kChunkSize) const
     {
-        // rhs_lds is reused for the output transpose. Every wave must finish
-        // reading the GEMM RHS before any wave overwrites this storage.
-        block_sync_lds_relaxed();
-        auto out_bf16 = cast_tile<DataType>(out);
-        constexpr auto spans = remove_cvref_t<decltype(out_bf16)>::get_distributed_spans();
-        sweep_tile_span(spans[number<0>{}], [&](auto idx0) {
-            sweep_tile_span(spans[number<1>{}], [&](auto idx1) {
-                constexpr auto dstr_idx = make_tuple(idx0, idx1);
-                const auto tile_idx =
-                    get_x_indices_from_distributed_indices(out_bf16.get_tile_distribution(), dstr_idx);
-                const int r = tile_idx.at(number<0>{});
-                const int c = tile_idx.at(number<1>{});
-                smem.rhs_lds[r * 64 + c] = out_bf16(dstr_idx);
-            });
-        });
-        block_sync_lds_relaxed();
-
-        constexpr int kVec = 8;
-        using Vec = ext_vector_t<DataType, kVec>;
-        const int tid = get_thread_id();
-        for(int i = tid; i < kChunkSize * (64 / kVec); i += Policy::kBlockSize)
-        {
-            const int r = i / (64 / kVec);
-            const int c = (i - r * (64 / kVec)) * kVec;
-            *reinterpret_cast<Vec*>(out_global + (tc + r) * stride_out_t +
-                                    ivh * kHeadDim + col + c) =
-                *reinterpret_cast<const Vec*>(smem.rhs_lds + r * 64 + c);
-        }
+        using Bf16Warp = typename GdnRecomputeWUWarpGemmSelector<bf16_t>::Type;
+        static_assert(std::is_same_v<typename Policy::WarpGemm::CWarpOutputDstrEncoding,
+                                     typename Bf16Warp::CWarpOutputDstrEncoding>);
+        static_assert(OutTile::get_thread_buffer_size() == 16);
+        store_output_tile_direct_masked(
+            out, out_global, tc, ivh, col, stride_out_t, valid_rows);
     }
 
     template <int LaneXor>
@@ -348,14 +345,14 @@ struct GdnRecomputeWUPipeline
     }
 
     template <typename OutTile>
-    CK_TILE_DEVICE void store_output_tile_direct_bf16(const OutTile& out,
+    CK_TILE_DEVICE void store_output_tile_direct(const OutTile& out,
                                                       DataType* __restrict__ out_global,
                                                       int tc,
                                                       int ivh,
                                                       int col,
                                                       int stride_out_t) const
     {
-        auto out_bf16 = cast_tile<DataType>(out);
+        auto out_bf16 = gdn_cast_tile<DataType>(out);
         using Bf16x16 = ext_vector_t<DataType, 16>;
         using Dwordx8 = ext_vector_t<int32_t, 8>;
         using Dwordx4 = ext_vector_t<int32_t, 4>;
@@ -402,7 +399,7 @@ struct GdnRecomputeWUPipeline
     }
 
     template <typename OutTile>
-    CK_TILE_DEVICE void store_output_tile_direct_bf16_masked(
+    CK_TILE_DEVICE void store_output_tile_direct_masked(
         const OutTile& out,
         DataType* __restrict__ out_global,
         int tc,
@@ -411,7 +408,7 @@ struct GdnRecomputeWUPipeline
         int stride_out_t,
         int valid_rows) const
     {
-        auto out_bf16 = cast_tile<DataType>(out);
+        auto out_bf16 = gdn_cast_tile<DataType>(out);
         using Bf16x16 = ext_vector_t<DataType, 16>;
         using Dwordx8 = ext_vector_t<int32_t, 8>;
         using Dwordx4 = ext_vector_t<int32_t, 4>;
@@ -518,7 +515,7 @@ struct GdnRecomputeWUPipeline
             thread_buffer<DataType, kRhsVec> out_buf;
             static_for<0, kRhsVec, 1>{}([&](auto j) {
                 const float rhs = type_convert<float>(rhs_buf[i_load * kRhsVec + j]);
-                out_buf(j) = type_convert<DataType>(rhs * smem.scale_lds[r]);
+                out_buf(j) = gdn_type_convert<DataType>(rhs * smem.scale_lds[r]);
             });
             *reinterpret_cast<Vec*>(smem.rhs_lds + r * 64 + c) =
                 out_buf.template get_as<Vec>()[number<0>{}];
@@ -604,7 +601,7 @@ struct GdnRecomputeWUPipeline
         auto out = bg.MakeOuputLayout(c);
         if constexpr(std::is_same_v<DataType, bf16_t>)
         {
-            store_output_tile_direct_bf16(out, out_global, tc, ivh, col, stride_out_t);
+            store_output_tile_direct(out, out_global, tc, ivh, col, stride_out_t);
         }
         else
         {
@@ -627,11 +624,28 @@ struct GdnRecomputeWUPipeline
         constexpr auto bg = RecomputeBlockGemm{};
         auto c = RecomputeBlockGemm::MakeCBlockTile();
         clear_tile(c);
-        auto rhs_view = stage_scale_rhs_lds_view(rhs_buf, smem);
-        bg.RunWithStreamingDsreadmB(c, a_tile, rhs_view);
+        if constexpr(std::is_same_v<DataType, bf16_t>)
+        {
+            auto rhs_view = stage_scale_rhs_lds_view(rhs_buf, smem);
+            bg.RunWithStreamingDsreadmB(c, a_tile, rhs_view);
+        }
+        else
+        {
+            auto b_tile = stage_scale_rhs_to_lds(rhs_buf, smem);
+            bg(c, a_tile, b_tile);
+        }
         auto out = bg.MakeOuputLayout(c);
-        store_output_tile_direct_bf16_masked(
-            out, out_global, tc, ivh, col, stride_out_t, valid_rows);
+        if constexpr(std::is_same_v<DataType, bf16_t>)
+        {
+            store_output_tile_direct_masked(
+                out, out_global, tc, ivh, col, stride_out_t, valid_rows);
+        }
+        else
+        {
+            store_output_tile(out, out_global, tc, ivh, col, stride_out_t,
+                              smem, valid_rows);
+            wg_sync_lds(bool_constant<true>{});
+        }
     }
 
     template <bool SyncLdsAfter = false, typename ABlockTile>
@@ -664,7 +678,7 @@ struct GdnRecomputeWUPipeline
         auto out = bg.MakeOuputLayout(c);
         if constexpr(std::is_same_v<DataType, bf16_t>)
         {
-            store_output_tile_direct_bf16(out, out_global, tc, ivh, col, stride_out_t);
+            store_output_tile_direct(out, out_global, tc, ivh, col, stride_out_t);
         }
         else
         {
@@ -688,15 +702,32 @@ struct GdnRecomputeWUPipeline
         constexpr auto bg = RecomputeBlockGemm{};
         auto c = RecomputeBlockGemm::MakeCBlockTile();
         clear_tile(c);
-        auto rhs_view = stage_rhs_lds_view(rhs_buf, smem);
-        bg.RunLowerWithPrefetch2DsreadmB(c, a_tile, rhs_view);
+        if constexpr(std::is_same_v<DataType, bf16_t>)
+        {
+            auto rhs_view = stage_rhs_lds_view(rhs_buf, smem);
+            bg.RunLowerWithPrefetch2DsreadmB(c, a_tile, rhs_view);
+        }
+        else
+        {
+            auto b_tile = stage_rhs_to_lds(rhs_buf, smem);
+            bg(c, a_tile, b_tile);
+        }
         if constexpr(SyncLdsAfter)
         {
             block_sync_lds_relaxed();
         }
         auto out = bg.MakeOuputLayout(c);
-        store_output_tile_direct_bf16_masked(
-            out, out_global, tc, ivh, col, stride_out_t, valid_rows);
+        if constexpr(std::is_same_v<DataType, bf16_t>)
+        {
+            store_output_tile_direct_masked(
+                out, out_global, tc, ivh, col, stride_out_t, valid_rows);
+        }
+        else
+        {
+            store_output_tile(out, out_global, tc, ivh, col, stride_out_t,
+                              smem, valid_rows);
+            wg_sync_lds(bool_constant<true>{});
+        }
     }
 
     template <typename ABlockTile>

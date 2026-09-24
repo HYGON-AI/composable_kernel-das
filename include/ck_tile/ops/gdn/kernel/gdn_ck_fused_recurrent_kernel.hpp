@@ -66,12 +66,12 @@ struct GdnFusedRecurrentKargs
 #include "ck_tile/ops/gdn/pipeline/gdn_ck_fused_recurrent_pipeline.hpp"
 #include "ck_tile/host.hpp"
 
-template <typename Policy, bool ScalarGHeadwiseFastPath = false>
+template <typename Policy, bool ScalarGHeadwiseFastPath = false, bool RawGateFastPath = false, bool BetaSigmoid = false>
 struct GdnFusedRecurrentKernel
 {
     using Kargs = GdnFusedRecurrentKargs;
     using Pipeline = ck_tile::GdnFusedRecurrentPipeline<
-        Policy, ScalarGHeadwiseFastPath>;
+        Policy, ScalarGHeadwiseFastPath, BetaSigmoid, RawGateFastPath>;
 
     CK_TILE_HOST static constexpr dim3 GridSize(const Kargs& args)
     {
@@ -91,6 +91,22 @@ struct GdnFusedRecurrentKernel
 
     CK_TILE_DEVICE void operator()(Kargs args) const
     {
+        if constexpr(Policy::kStateVector > 1)
+        {
+            args.transpose_state = true;
+            args.key_dim = 128;
+            args.value_dim = 128;
+        }
+        if constexpr(RawGateFastPath)
+        {
+            constexpr bool bf = std::is_same_v<typename Policy::Problem::QKDataType, ck_tile::bf16_t>;
+            args.use_qk_l2norm = Policy::kNormalize;
+            args.g_dtype = args.dt_bias_dtype = bf ? 1 : 0;
+            args.beta_dtype = args.a_log_dtype = 2;
+            args.use_g = args.beta_headwise = args.use_initial_state = true;
+            args.store_final_state = args.gate_in_kernel = args.has_dt_bias = true;
+            args.use_gk = args.use_gv = args.use_exp2 = false;
+        }
         const ck_tile::index_t value_tile =
             static_cast<ck_tile::index_t>(blockIdx.x);
         const ck_tile::index_t sequence_head =

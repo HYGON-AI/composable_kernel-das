@@ -10,11 +10,12 @@ template <typename DataType,
           ck_tile::index_t GroupSize = 1,
           ck_tile::index_t ValueSplit = 1,
           bool PreshuffledH = false,
-          bool TwoRows = false>
+          bool TwoRows = false,
+          bool PairedEpilogue = false>
 struct GdnOutputTiledMmacFwdKernel
 {
     using Problem =
-        GdnOutputFwdProblem<DataType, GroupSize, ValueSplit, PreshuffledH, TwoRows>;
+        GdnOutputFwdProblem<DataType, GroupSize, ValueSplit, PreshuffledH, TwoRows, PairedEpilogue>;
     using Pipeline = GdnOutputFwdPipeline<Problem>;
     using Kargs    = typename Problem::Kargs;
 

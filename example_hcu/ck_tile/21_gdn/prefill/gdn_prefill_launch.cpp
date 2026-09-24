@@ -76,9 +76,7 @@ void launch_prefill_bf16(const PrefillArguments& args, hipStream_t stream)
     launch_kkt_bf16(args, stream);
     launch_recompute_bf16(args, stream);
     launch_cp_context(args, stream);
-    launch_state_bf16(args, stream);
-    if(args.state_save_new_value)
-        launch_output_bf16(args, stream);
+    launch_state_output_bf16(args, stream);
 }
 
 void launch_prefill_fp16(const PrefillArguments& args, hipStream_t stream)
@@ -95,9 +93,7 @@ void launch_prefill_fp16(const PrefillArguments& args, hipStream_t stream)
     launch_kkt_fp16(args, stream);
     launch_recompute_fp16(args, stream);
     launch_cp_context(args, stream);
-    launch_state_fp16(args, stream);
-    if(args.state_save_new_value)
-        launch_output_fp16(args, stream);
+    launch_state_output_fp16(args, stream);
 }
 
 } // namespace gdn_example

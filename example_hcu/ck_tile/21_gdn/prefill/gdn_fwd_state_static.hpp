@@ -6,6 +6,7 @@
 #include "ck_tile/host.hpp"
 
 #include "ck_tile/ops/gdn/kernel/chunk_delta_h_scan_kernel.hpp"
+#include "ck_tile/ops/gdn/kernel/chunk_delta_h_cooperative_kernel.hpp"
 
 
 namespace gdn {
@@ -41,6 +42,22 @@ void launch_state_scan_dtype(
     bool preshuffled_h,
     hipStream_t stream)
 {
+    // The cooperative mapping is the validated route for both dtypes
+    // in this bounded small-head workload.
+    if(vtile == 16 && !guard_tail && !args.is_varlen &&
+       args.num_sequences == 1 && args.num_qk_heads == 2 &&
+       args.num_value_heads == 8 && args.total_tokens > 0 &&
+       (args.total_tokens <= 4096 ||
+        (std::is_same_v<DataType, ck_tile::half_t> && args.total_tokens <= 8192)))
+    {
+        auto launch=[&](auto packed) {
+            using Kernel=ck_tile::ChunkDeltaHCooperativeKernel<DataType,decltype(packed)::value>;
+            auto callable=ck_tile::make_kernel<256,1>(Kernel{},dim3(8,args.num_value_heads,1),dim3(256,1,1),0,args);
+            callable(ck_tile::stream_config{stream,false});
+        };
+        if(preshuffled_h)launch(std::true_type{});else launch(std::false_type{});
+        return;
+    }
     if(vtile == 64)
     {
         if(guard_tail)
@@ -78,9 +95,19 @@ void launch_state_scan_dtype(
     else
     {
         if(guard_tail)
-            launch_state_scan_specialization<DataType, 16, true, false>(args, stream);
+        {
+            if(preshuffled_h)
+                launch_state_scan_specialization<DataType, 16, true, true>(args, stream);
+            else
+                launch_state_scan_specialization<DataType, 16, true, false>(args, stream);
+        }
         else
-            launch_state_scan_specialization<DataType, 16, false, false>(args, stream);
+        {
+            if(preshuffled_h)
+                launch_state_scan_specialization<DataType, 16, false, true>(args, stream);
+            else
+                launch_state_scan_specialization<DataType, 16, false, false>(args, stream);
+        }
     }
 }
 

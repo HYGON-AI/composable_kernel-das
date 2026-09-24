@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 // SPDX-License-Identifier: MIT
 #pragma once
+#include "ck_tile/ops/gdn/gdn_numeric.hpp"
 
 #include "ck_tile/ops/gdn/pipeline/gdn_ck_kkt_solve_policy.hpp"
 #include "ck_tile/ops/gdn/block/gdn_ck_kkt_solve_block_gemm.hpp"
@@ -32,38 +33,9 @@ struct GdnKktSolvePipeline
     static constexpr int S32 = 8;
     static constexpr int S33 = 9;
 
-    struct KktGemmProblem
-    {
-        using ADataType      = DataType;
-        using BDataType      = DataType;
-        using CDataType      = AccType;
-        using BlockGemmShape = TileGemmShape<
-            sequence<64, 64, 128>,
-            sequence<4, 1, 1>,
-            sequence<16, 64, 32>>;
-        static constexpr index_t kBlockSize = Policy::kBlockSize;
-    };
-    using KktBlockGemmPolicy =
-        GdnKktARegBSmemPolicy<sequence<4, 1, 1>, typename Policy::KktWarpGemm>;
-
-    struct Block16GemmProblem
-    {
-        using ADataType      = DataType;
-        using BDataType      = DataType;
-        using CDataType      = AccType;
-        using BlockGemmShape = TileGemmShape<
-            sequence<16, 16, 16>,
-            sequence<1, 1, 1>,
-            sequence<16, 16, 16>>;
-        static constexpr index_t kBlockSize = Policy::kBlockSize;
-    };
-    using Block16GemmPolicy =
-        GdnKktARegBSmemPolicy<sequence<1, 1, 1>, typename Policy::SmallWarpGemm>;
-    using Block16Gemm = GdnKktBlockGemmARegBReg<Block16GemmProblem, Block16GemmPolicy>;
-
     struct SharedStorage
     {
-        float diag_work[NumWarps][2][kBlockElems];
+        float diag_work[NumWarps][NumWarps == 1 ? 4 : 2][kBlockElems];
     };
 
     using RegGemm16 = GdnKktWarpRegGemm16<DataType>;
@@ -73,356 +45,6 @@ struct GdnKktSolvePipeline
     {
         RegCVec s00, s10, s11, s20, s21, s22, s30, s31, s32, s33;
     };
-
-    template <typename Tile>
-    CK_TILE_DEVICE void mask_scale_kkt(Tile& tile,
-                                       const float* __restrict__ g_global,
-                                       const float* __restrict__ b_global,
-                                       int tc,
-                                       int ivh,
-                                       int T,
-                                       int stride_g_t,
-                                       bool use_exp2) const
-    {
-        constexpr auto spans = Tile::get_distributed_spans();
-        sweep_tile_span(spans[number<0>{}], [&](auto idx0) {
-            sweep_tile_span(spans[number<1>{}], [&](auto idx1) {
-                constexpr auto dstr_idx = make_tuple(idx0, idx1);
-                const auto tile_idx =
-                    get_x_indices_from_distributed_indices(tile.get_tile_distribution(), dstr_idx);
-                const int r = tile_idx.at(number<0>{});
-                const int c = tile_idx.at(number<1>{});
-                if(r > c && tc + r < T)
-                {
-                    const float gd = g_global[(tc + r) * stride_g_t + ivh] -
-                                     g_global[(tc + c) * stride_g_t + ivh];
-                    const float gate = use_exp2 ? __builtin_amdgcn_exp2f(gd) : expf(gd);
-                    tile(dstr_idx) *= gate * b_global[(tc + r) * stride_g_t + ivh];
-                }
-                else
-                {
-                    tile(dstr_idx) = 0.0f;
-                }
-            });
-        });
-    }
-
-    template <typename Tile>
-    CK_TILE_DEVICE void add_identity(Tile& tile) const
-    {
-        constexpr auto spans = Tile::get_distributed_spans();
-        sweep_tile_span(spans[number<0>{}], [&](auto idx0) {
-            sweep_tile_span(spans[number<1>{}], [&](auto idx1) {
-                constexpr auto dstr_idx = make_tuple(idx0, idx1);
-                const auto tile_idx =
-                    get_x_indices_from_distributed_indices(tile.get_tile_distribution(), dstr_idx);
-                if(tile_idx.at(number<0>{}) == tile_idx.at(number<1>{}))
-                    tile(dstr_idx) += 1.0f;
-            });
-        });
-    }
-
-    template <typename Tile>
-    CK_TILE_DEVICE void neg_tile(Tile& tile) const
-    {
-        tile_elementwise_inout([](auto& x) { x = -x; }, tile);
-    }
-
-    template <typename Tile>
-    CK_TILE_DEVICE void accumulate(Tile& dst, const Tile& src) const
-    {
-        tile_elementwise_inout([](auto& x, const auto& y) { x += y; }, dst, src);
-    }
-
-    template <typename ATile, typename BTile>
-    CK_TILE_DEVICE auto gemm16(const ATile& a, const BTile& b) const
-    {
-        constexpr auto bg = Block16Gemm{};
-        auto c = Block16Gemm::MakeCBlockTile();
-        clear_tile(c);
-        bg(c, a, b);
-        return bg.MakeOuputLayout(c);
-    }
-
-    CK_TILE_DEVICE static constexpr auto MakeCOutBlockTile()
-    {
-        constexpr auto bg = Block16Gemm{};
-        auto c = Block16Gemm::MakeCBlockTile();
-        return bg.MakeOuputLayout(c);
-    }
-
-    template <typename LdsView, typename ProtoTile>
-    CK_TILE_DEVICE auto load16(const LdsView& view, int r, int c, const ProtoTile& proto) const
-    {
-        auto win = make_tile_window(
-            view,
-            make_tuple(number<kSubChunk>{}, number<kSubChunk>{}),
-            multi_index<2>{r, c},
-            proto.get_tile_distribution());
-        return load_tile(win);
-    }
-
-    template <typename LdsView>
-    CK_TILE_DEVICE auto load16_a(const LdsView& view, int r, int c) const
-    {
-        return cast_tile<DataType>(load16(view, r, c, Block16Gemm::MakeABlockTile()));
-    }
-
-    template <typename LdsView>
-    CK_TILE_DEVICE auto load16_b(const LdsView& view, int r, int c) const
-    {
-        auto b_t_view = make_naive_tensor_view<address_space_enum::lds>(
-            view.get_buffer_view().p_data_ + r * kChunkSize + c,
-            make_tuple(number<kSubChunk>{}, number<kSubChunk>{}),
-            make_tuple(number<1>{}, number<kChunkSize>{}),
-            number<1>{},
-            number<1>{});
-        return cast_tile<DataType>(load16(b_t_view, 0, 0, Block16Gemm::MakeBBlockTile()));
-    }
-
-    template <typename TmpView>
-    CK_TILE_DEVICE auto load16_b_tmp(const TmpView& tmp_view) const
-    {
-        auto b_t_view = make_naive_tensor_view<address_space_enum::lds>(
-            tmp_view.get_buffer_view().p_data_,
-            make_tuple(number<kSubChunk>{}, number<kSubChunk>{}),
-            make_tuple(number<1>{}, number<kSubChunk>{}),
-            number<1>{},
-            number<1>{});
-        return cast_tile<DataType>(load16(b_t_view, 0, 0, Block16Gemm::MakeBBlockTile()));
-    }
-
-    template <typename LdsView>
-    CK_TILE_DEVICE auto load16_c_out(const LdsView& view, int r, int c) const
-    {
-        return load16(view, r, c, MakeCOutBlockTile());
-    }
-
-    template <typename LdsView, typename Tile>
-    CK_TILE_DEVICE void store16(const LdsView& view, int r, int c, const Tile& tile) const
-    {
-        auto win = make_tile_window(
-            view,
-            make_tuple(number<kSubChunk>{}, number<kSubChunk>{}),
-            multi_index<2>{r, c},
-            tile.get_tile_distribution());
-        store_tile(win, tile);
-    }
-
-    template <typename TmpView, typename Tile>
-    CK_TILE_DEVICE auto c_to_a_via_lds(const TmpView& tmp_view, const Tile& tile) const
-    {
-        store16(tmp_view, 0, 0, tile);
-        block_sync_lds();
-        return load16_a(tmp_view, 0, 0);
-    }
-
-    template <typename TmpView, typename Tile>
-    CK_TILE_DEVICE auto c_to_b_via_lds(const TmpView& tmp_view, const Tile& tile) const
-    {
-        store16(tmp_view, 0, 0, tile);
-        block_sync_lds();
-        return load16_b_tmp(tmp_view);
-    }
-
-    template <typename TmpView, typename Tile>
-    CK_TILE_DEVICE auto c_to_c_via_lds(const TmpView& tmp_view, const Tile& tile) const
-    {
-        store16(tmp_view, 0, 0, tile);
-        block_sync_lds();
-        return load16_c_out(tmp_view, 0, 0);
-    }
-
-    template <typename LdsView>
-    CK_TILE_DEVICE auto mm16_lds(const LdsView& view, int ar, int ac, int br, int bc) const
-    {
-        auto a = load16_a(view, ar, ac);
-        auto b = load16_b(view, br, bc);
-        return gemm16(a, b);
-    }
-
-    template <typename LdsView, typename TmpView>
-    CK_TILE_DEVICE void invert_diag16(const LdsView& view, const TmpView& tmp_view, int base) const
-    {
-        auto l = load16(view, base, base, Block16Gemm::MakeCBlockTile());
-        auto neg_l_b = load16_b(view, base, base);
-        neg_tile(neg_l_b);
-
-        auto ai = l;
-        neg_tile(ai);
-        add_identity(ai);
-
-        auto power = load16_a(view, base, base);
-        neg_tile(power);
-        static_for<2, 16, 1>{}([&](auto) {
-            auto prod = gemm16(power, neg_l_b);
-            auto prod_c = c_to_c_via_lds(tmp_view, prod);
-            accumulate(ai, prod_c);
-            power = c_to_a_via_lds(tmp_view, prod_c);
-        });
-
-        store16(view, base, base, ai);
-    }
-
-    template <int OutSlot, int LeftDiagSlot, int DiagSlot, typename LdsView>
-    CK_TILE_DEVICE void merge_level1_adjacent(LdsView& view) const
-    {
-        using WG16 = GdnKktWarpMmac16<DataType>;
-        auto mid = WG16::template mm_slot_slot<OutSlot, LeftDiagSlot>(view);
-        auto out = WG16::template mm_slot_breg<DiagSlot>(view, WG16::c_to_b(mid));
-        WG16::template store_c_slot<OutSlot>(view, WG16::neg_c(out));
-    }
-
-    template <int OutSlot,
-              int Src0Slot,
-              int Inv0Slot,
-              int Src1Slot,
-              int Inv1Slot,
-              int DiagSlot,
-              typename LdsView>
-    CK_TILE_DEVICE void merge_level2_two_term(LdsView& view) const
-    {
-        using WG16 = GdnKktWarpMmac16<DataType>;
-        auto acc = WG16::template mm_slot_slot<Src0Slot, Inv0Slot>(view);
-        auto rhs = WG16::template mm_slot_slot<Src1Slot, Inv1Slot>(view);
-        acc += rhs;
-        auto out = WG16::template mm_slot_breg<DiagSlot>(view, WG16::c_to_b(acc));
-        WG16::template store_c_slot<OutSlot>(view, WG16::neg_c(out));
-    }
-
-    template <int OutSlot,
-              int Src0Slot,
-              int Inv0Slot,
-              int Src1Slot,
-              int Inv1Slot,
-              int Src2Slot,
-              int Inv2Slot,
-              int DiagSlot,
-              typename LdsView>
-    CK_TILE_DEVICE void merge_level3_three_term(LdsView& view) const
-    {
-        using WG16 = GdnKktWarpMmac16<DataType>;
-        auto acc = WG16::template mm_slot_slot<Src0Slot, Inv0Slot>(view);
-        auto rhs0 = WG16::template mm_slot_slot<Src1Slot, Inv1Slot>(view);
-        auto rhs1 = WG16::template mm_slot_slot<Src2Slot, Inv2Slot>(view);
-        acc += rhs0;
-        acc += rhs1;
-        auto out = WG16::template mm_slot_breg<DiagSlot>(view, WG16::c_to_b(acc));
-        WG16::template store_c_slot<OutSlot>(view, WG16::neg_c(out));
-    }
-
-    template <typename LdsView>
-    CK_TILE_DEVICE void solve_merge(LdsView& view) const
-    {
-        const index_t warp = get_warp_id();
-
-        auto init_diag = [&](auto bi, auto slot_c) {
-            constexpr int slot = slot_c;
-            if(warp == bi)
-            {
-                const index_t lane = get_lane_id();
-                static_for<0, 4, 1>{}([&](auto e) {
-                    const index_t idx = lane + e * 64;
-                    const index_t r = idx / kSubChunk;
-                    const index_t c = idx - r * kSubChunk;
-                    const index_t off = slot * kBlockElems + r * kSubChunk + c;
-                    const float v = view.get_buffer_view()[off];
-                    view.get_buffer_view()(off) = (r > c) ? -v : 0.0f;
-                });
-            }
-        };
-
-        auto finish_diag = [&](auto bi, auto slot_c) {
-            constexpr int slot = slot_c;
-            if(warp == bi)
-            {
-                const index_t lane = get_lane_id();
-                static_for<0, 4, 1>{}([&](auto e) {
-                    const index_t idx = lane + e * 64;
-                    const index_t r = idx / kSubChunk;
-                    const index_t c = idx - r * kSubChunk;
-                    if(r == c)
-                    {
-                        view.get_buffer_view()(slot * kBlockElems + r * kSubChunk + c) += 1.0f;
-                    }
-                });
-            }
-        };
-
-        auto update_diag_row = [&](auto bi, auto slot_c, auto ii) {
-            constexpr int slot = slot_c;
-            if(warp == bi)
-            {
-                const index_t j = get_lane_id() & 15;
-                float row_j = 0.0f;
-                if(j < ii)
-                {
-                    row_j = view.get_buffer_view()[slot * kBlockElems + ii * kSubChunk + j];
-                    float corr = 0.0f;
-                    static_for<0, kSubChunk, 1>{}([&](auto kk) {
-                        if(kk < ii)
-                        {
-                            const float aik = warp_shuffle(row_j, kk);
-                            const float akj = view.get_buffer_view()[
-                                slot * kBlockElems + kk * kSubChunk + j];
-                            corr += aik * akj;
-                        }
-                    });
-                    row_j += corr;
-                }
-                view.get_buffer_view()(slot * kBlockElems + ii * kSubChunk + j) = row_j;
-            }
-        };
-
-        init_diag(number<0>{}, number<S00>{});
-        init_diag(number<1>{}, number<S11>{});
-        init_diag(number<2>{}, number<S22>{});
-        init_diag(number<3>{}, number<S33>{});
-        block_sync_lds();
-
-        static_for<2, kSubChunk, 1>{}([&](auto ii) {
-            update_diag_row(number<0>{}, number<S00>{}, ii);
-            update_diag_row(number<1>{}, number<S11>{}, ii);
-            update_diag_row(number<2>{}, number<S22>{}, ii);
-            update_diag_row(number<3>{}, number<S33>{}, ii);
-        });
-        block_sync_lds();
-
-        finish_diag(number<0>{}, number<S00>{});
-        finish_diag(number<1>{}, number<S11>{});
-        finish_diag(number<2>{}, number<S22>{});
-        finish_diag(number<3>{}, number<S33>{});
-        block_sync_lds();
-
-        if(warp == 0)
-        {
-            merge_level1_adjacent<S10, S00, S11>(view);
-        }
-        if(warp == 1)
-        {
-            merge_level1_adjacent<S21, S11, S22>(view);
-        }
-        if(warp == 2)
-        {
-            merge_level1_adjacent<S32, S22, S33>(view);
-        }
-        block_sync_lds();
-
-        if(warp == 0)
-        {
-            merge_level2_two_term<S20, S20, S00, S21, S10, S22>(view);
-        }
-        if(warp == 1)
-        {
-            merge_level2_two_term<S31, S31, S11, S32, S21, S33>(view);
-        }
-        block_sync_lds();
-
-        if(warp == 0)
-        {
-            merge_level3_three_term<S30, S30, S00, S31, S10, S32, S20, S33>(view);
-        }
-    }
 
     template <typename LdsView>
     CK_TILE_DEVICE void compute_store_kkt16_direct(const DataType* __restrict__ k_base,
@@ -558,7 +180,7 @@ struct GdnKktSolvePipeline
             if(tc + row_base + r < T)
             {
                 thread_buffer<DataType, 1> out;
-                out(number<0>{}) = type_convert<DataType>(0.0f);
+                out(number<0>{}) = gdn_type_convert<DataType>(0.0f);
                 const index_t out_offset = (row_base + r) * stride_A_t + col_base + c;
                 A_base[out_offset] = out(number<0>{});
             }
@@ -791,6 +413,31 @@ struct GdnKktSolvePipeline
     CK_TILE_DEVICE void invert_diag_pair_work(float* __restrict__ work0,
                                               float* __restrict__ work1) const
     {
+        if constexpr(NumWarps == 1)
+        {
+        const index_t lane=get_lane_id(),pair=lane>>5,column=lane&15;
+        float* work=pair==0 ? work0 : work1;
+        // Keep a complete FP32 column per lane. Row coefficients need one
+        // broadcast; all previously solved column values are lane-local.
+        thread_buffer<float,16> col;
+        static_for<0,16,1>{}([&](auto row){
+            col(row)=row>column ? -work[row*16+column] : 0.f;
+        });
+        static_for<2,16,1>{}([&](auto row){
+            constexpr int ii=decltype(row)::value;
+            const float original=col[row];
+            float corr=0.f;
+            static_for<0,ii,1>{}([&](auto k){
+                corr+=warp_shuffle(original,pair*32+k)*col[k];
+            });
+            col(row)=original+corr;
+        });
+        static_for<0,16,1>{}([&](auto row){
+            if((lane&16)==0)work[row*16+column]=row==column ? 1.f : col[row];
+        });
+        }
+        else
+        {
         const index_t lane = get_lane_id();
         const index_t pair = lane >> 5;
         const index_t local_lane = lane & 31;
@@ -830,6 +477,7 @@ struct GdnKktSolvePipeline
         {
             work[local_lane * 16 + local_lane] = 1.0f;
         }
+        }
     }
 
     CK_TILE_DEVICE void invert_diag_pair(RegCVec& c0,
@@ -852,6 +500,41 @@ struct GdnKktSolvePipeline
                                             float* __restrict__ work0,
                                             float* __restrict__ work1) const
     {
+        if constexpr(NumWarps == 1 && ActiveBlocks >= 3)
+        {
+            // Each 16-lane subgroup owns one diagonal block. All four
+            // independent FP32 solves advance together within one wave64.
+            store_diag_work(work0, b.s00);
+            store_diag_work(work0 + 256, b.s11);
+            store_diag_work(work0 + 512, b.s22);
+            store_diag_work(work0 + 768, b.s33);
+            lds_wait();
+            const index_t lane=get_lane_id(),diag=lane>>4,column=lane&15;
+            float* work=work0+diag*256;
+            thread_buffer<float,16> col;
+            static_for<0,16,1>{}([&](auto row){
+                col(row)=row>column ? -work[row*16+column] : 0.f;
+            });
+            static_for<2,16,1>{}([&](auto row){
+                constexpr int ii=decltype(row)::value;
+                const float original=col[row];
+                float corr=0.f;
+                static_for<0,ii,1>{}([&](auto k){
+                    corr+=warp_shuffle(original,diag*16+k)*col[k];
+                });
+                col(row)=original+corr;
+            });
+            static_for<0,16,1>{}([&](auto row){
+                work[row*16+column]=row==column ? 1.f : col[row];
+            });
+            lds_wait();
+            b.s00=load_diag_work(work0);
+            b.s11=load_diag_work(work0+256);
+            b.s22=load_diag_work(work0+512);
+            b.s33=load_diag_work(work0+768);
+            lds_wait();
+            return;
+        }
         invert_diag_pair(b.s00, b.s11, work0, work1);
         if constexpr(ActiveBlocks >= 3)
         {
@@ -924,7 +607,7 @@ struct GdnKktSolvePipeline
                 }
                 const index_t offset =
                     (row_base + row) * stride_A_t + col_base + col;
-                buffer_store<2>{}(type_convert<DataType>(v),
+                buffer_store<2>{}(gdn_type_convert<DataType>(v),
                                   resource,
                                   offset * sizeof(DataType),
                                   0,
@@ -946,7 +629,7 @@ struct GdnKktSolvePipeline
         const index_t col = (lane & 3) * 4;
         thread_buffer<DataType, 4> zero4;
         static_for<0, 4, 1>{}([&](auto e) {
-            zero4(e) = type_convert<DataType>(0.0f);
+            zero4(e) = gdn_type_convert<DataType>(0.0f);
         });
         if(tc + row_base + row < T)
         {
@@ -1023,7 +706,7 @@ struct GdnKktSolvePipeline
         const float*    __restrict__ g_global,
         const float*    __restrict__ b_global,
         DataType*       __restrict__ A_global,
-        int tc, int ih, int,
+        int tc, int ih, int value_head_offset,
         int T, int H, int HV,
         int stride_k_t, int stride_g_t, int stride_A_t,
         bool use_exp2,
@@ -1031,7 +714,7 @@ struct GdnKktSolvePipeline
     {
         const index_t warp = get_warp_id();
         const int ratio_hv = HV / H;
-        const int ivh = ih * ratio_hv + warp;
+        const int ivh = ih * ratio_hv + value_head_offset + warp;
         const DataType* k_base = k_global + tc * stride_k_t + ih * kHeadDim;
 
         const index_t lane = get_lane_id();

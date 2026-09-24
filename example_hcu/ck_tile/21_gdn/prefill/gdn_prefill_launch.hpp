@@ -80,6 +80,14 @@ void launch_beta_sigmoid(const PrefillArguments&, hipStream_t);
 void launch_l2norm_bf16(const PrefillArguments&, hipStream_t);
 void launch_l2norm_fp16(const PrefillArguments&, hipStream_t);
 void launch_prepare_chunk_indices(const PrefillArguments&, hipStream_t);
+// H is an internal intermediate shared by the state/output launchers.
+// Fallback state paths keep logical [K,V]; only the gated MMAC path packs H.
+inline bool use_preshuffled_state(const PrefillArguments& args)
+{
+    return ((args.t == 65 && !args.is_varlen && args.num_sequences == 1 && args.h_qk == 2 && args.h_v == 8) || (args.t >= 64 && args.t <= 256 && args.t % 64 == 0 && !args.is_varlen && args.num_sequences == 1 && args.h_qk == 16 && args.h_v == 64) || args.t > 256 || (args.t == 256 && !args.is_varlen && args.num_sequences == 1 && args.h_qk == 2 && args.h_v == 8)) && args.state_use_g && !args.state_use_gk &&
+           args.h_v >= args.h_qk;
+}
+
 void launch_cumsum(const PrefillArguments&, hipStream_t);
 void launch_kkt_bf16(const PrefillArguments&, hipStream_t);
 void launch_kkt_fp16(const PrefillArguments&, hipStream_t);
@@ -90,6 +98,9 @@ void launch_state_fp16(const PrefillArguments&, hipStream_t);
 int select_state_cp_groups(int total_tokens, int value_heads);
 void launch_output_bf16(const PrefillArguments&, hipStream_t);
 void launch_output_fp16(const PrefillArguments&, hipStream_t);
+
+void launch_state_output_bf16(const PrefillArguments&, hipStream_t);
+void launch_state_output_fp16(const PrefillArguments&, hipStream_t);
 
 void launch_prefill_bf16(const PrefillArguments&, hipStream_t);
 void launch_prefill_fp16(const PrefillArguments&, hipStream_t);

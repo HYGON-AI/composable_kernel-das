@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 // SPDX-License-Identifier: MIT
 #pragma once
+#include "ck_tile/ops/gdn/gdn_numeric.hpp"
 
 #include "ck_tile/ops/gdn/pipeline/cp/chunk_delta_h_wave_reg_pipeline.hpp"
 #include "ck_tile/ops/gdn/pipeline/chunk_delta_h_wave_reg_pipeline.hpp"
@@ -349,7 +350,7 @@ __global__ __launch_bounds__(BlockSize) void chunk_delta_h_group_prefix_kernel(
         #pragma unroll
         for (index_t i = 0; i < kStatePerThread; ++i) {
             const index_t row = row_base + i * row_stride;
-            state_t[vv * (kHeadDim + kPad) + row] = type_convert<DataType>(state[i]);
+            state_t[vv * (kHeadDim + kPad) + row] = gdn_type_convert<DataType>(state[i]);
         }
 
         auto a_dram = make_naive_tensor_view<address_space_enum::global>(

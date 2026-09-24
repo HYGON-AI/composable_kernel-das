@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 // SPDX-License-Identifier: MIT
 #pragma once
+#include "ck_tile/ops/gdn/gdn_numeric.hpp"
 
 #include "ck_tile/ops/gdn/pipeline/gdn_fwd_output_config.hpp"
 #include <ck_tile/ops/gemm/pipeline/tile_gemm_shape.hpp>
@@ -10,7 +11,7 @@ namespace gdn {
 template <typename DataType>
 CK_TILE_DEVICE DataType gdn_output_cast_from_float(float value)
 {
-    return ck_tile::type_convert<DataType>(value);
+    return ck_tile::gdn_type_convert<DataType>(value);
 }
 
 template <typename DataType>
@@ -37,7 +38,8 @@ template <typename DataType_,
           ck_tile::index_t GroupSize_,
           ck_tile::index_t ValueSplit_ = 1,
           bool PreshuffledH_ = false,
-          bool TwoRows_ = false>
+          bool TwoRows_ = false,
+          bool PairedEpilogue_ = false>
 struct GdnOutputFwdProblem
 {
     using Config   = GdnOutputFwdConfig;
@@ -48,6 +50,7 @@ struct GdnOutputFwdProblem
     static constexpr ck_tile::index_t kValueSplit = ValueSplit_;
     static constexpr bool kPreshuffledH = PreshuffledH_;
     static constexpr bool kTwoRows = TwoRows_;
+    static constexpr bool kPairedEpilogue = PairedEpilogue_;
     static constexpr ck_tile::index_t kChunkSize = Config::kChunkSize;
     static constexpr ck_tile::index_t kHeadDim   = Config::kHeadDim;
     static constexpr ck_tile::index_t kValueDim  = Config::kValueDim;

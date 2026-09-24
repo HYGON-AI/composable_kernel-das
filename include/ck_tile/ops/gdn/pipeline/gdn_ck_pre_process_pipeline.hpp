@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 // SPDX-License-Identifier: MIT
 #pragma once
+#include "ck_tile/ops/gdn/gdn_numeric.hpp"
 
 #include "ck_tile/ops/gdn/pipeline/gdn_ck_pre_process_policy.hpp"
 #include "ck_tile/ops/gdn/block/gdn_ck_pre_process_block_gemm.hpp"
@@ -84,7 +85,7 @@ struct GdnPreProcessPipeline
                     get_x_indices_from_distributed_indices(tile.get_tile_distribution(), dstr_idx);
                 const int r = tile_idx.at(number<0>{});
                 const float s = smem.gate_scale[r];
-                tile(dstr_idx) = type_convert<DataType>(type_convert<float>(tile(dstr_idx)) * s);
+                tile(dstr_idx) = gdn_type_convert<DataType>(type_convert<float>(tile(dstr_idx)) * s);
             });
         });
     }
@@ -100,7 +101,7 @@ struct GdnPreProcessPipeline
                     get_x_indices_from_distributed_indices(tile.get_tile_distribution(), dstr_idx);
                 const int c = tile_idx.at(number<1>{});
                 const float s = smem.gate_scale[c];
-                tile(dstr_idx) = type_convert<DataType>(type_convert<float>(tile(dstr_idx)) * s);
+                tile(dstr_idx) = gdn_type_convert<DataType>(type_convert<float>(tile(dstr_idx)) * s);
             });
         });
     }
@@ -196,7 +197,7 @@ struct GdnPreProcessPipeline
     CK_TILE_DEVICE auto c_to_a(const Tile& tile, SharedStorage& smem) const
     {
         auto view = make_tmp_view(smem);
-        auto tmp = cast_tile<DataType>(tile);
+        auto tmp = gdn_cast_tile<DataType>(tile);
         auto win = make_tile_window(
             view,
             make_tuple(number<64>{}, number<64>{}),
@@ -213,7 +214,7 @@ struct GdnPreProcessPipeline
     CK_TILE_DEVICE auto c_to_b(const Tile& tile, SharedStorage& smem) const
     {
         auto view = make_tmp_view(smem);
-        auto tmp = cast_tile<DataType>(tile);
+        auto tmp = gdn_cast_tile<DataType>(tile);
         auto win = make_tile_window(
             view,
             make_tuple(number<64>{}, number<64>{}),

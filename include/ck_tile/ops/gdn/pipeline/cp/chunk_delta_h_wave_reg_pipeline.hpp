@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 // SPDX-License-Identifier: MIT
 #pragma once
+#include "ck_tile/ops/gdn/gdn_numeric.hpp"
 
 #include <ck_tile/core.hpp>
 
@@ -216,8 +217,8 @@ struct ChunkDeltaHCpSummaryPipeline
     template <typename I0, typename I1>
     CK_TILE_DEVICE static uint32_t pack_c_pair(const CVec& c, I0 i0, I1 i1)
     {
-        const uint32_t lo = bit_cast<uint16_t>(type_convert<DataType>(c_at(c, i0)));
-        const uint32_t hi = bit_cast<uint16_t>(type_convert<DataType>(c_at(c, i1)));
+        const uint32_t lo = bit_cast<uint16_t>(gdn_type_convert<DataType>(c_at(c, i0)));
+        const uint32_t hi = bit_cast<uint16_t>(gdn_type_convert<DataType>(c_at(c, i1)));
         return lo | (hi << 16);
     }
 
@@ -244,7 +245,7 @@ struct ChunkDeltaHCpSummaryPipeline
         } u{c};
         thread_buffer<DataType, 4> buf;
         static_for<0, 4, 1>{}(
-            [&](auto e) { buf(e) = type_convert<DataType>(u.e[e]); });
+            [&](auto e) { buf(e) = gdn_type_convert<DataType>(u.e[e]); });
         return buf.template get_as<BVec>()[number<0>{}];
     }
 
@@ -709,7 +710,7 @@ struct ChunkDeltaHCpSummaryPipeline
                                              t_tile * 16 + token) *
                                              args.num_value_heads * kVD +
                                          x_idx.at(number<0>{})]
-                                : type_convert<DataType>(0.0f);
+                                : gdn_type_convert<DataType>(0.0f);
                     });
                 });
                 return tile;
@@ -767,15 +768,15 @@ struct ChunkDeltaHCpSummaryPipeline
         const index_t v = lane & 15;
         const index_t t_group = lane >> 4;
         const uint32_t r01 =
-            static_cast<uint32_t>(bit_cast<uint16_t>(type_convert<DataType>(
+            static_cast<uint32_t>(bit_cast<uint16_t>(gdn_type_convert<DataType>(
                 residual.get_thread_buffer()[number<0>{}]))) |
-            (static_cast<uint32_t>(bit_cast<uint16_t>(type_convert<DataType>(
+            (static_cast<uint32_t>(bit_cast<uint16_t>(gdn_type_convert<DataType>(
                  residual.get_thread_buffer()[number<1>{}])))
              << 16);
         const uint32_t r23 =
-            static_cast<uint32_t>(bit_cast<uint16_t>(type_convert<DataType>(
+            static_cast<uint32_t>(bit_cast<uint16_t>(gdn_type_convert<DataType>(
                 residual.get_thread_buffer()[number<2>{}]))) |
-            (static_cast<uint32_t>(bit_cast<uint16_t>(type_convert<DataType>(
+            (static_cast<uint32_t>(bit_cast<uint16_t>(gdn_type_convert<DataType>(
                  residual.get_thread_buffer()[number<3>{}])))
              << 16);
         thread_buffer<DataType, 4> a;
@@ -848,7 +849,7 @@ struct ChunkDeltaHCpSummaryPipeline
             make_tuple(number<16>{}, number<16>{}),
             multi_index<2>{t_tile * 16, value_wave_id() * kWaveV},
             COutputDistribution{});
-        store_tile(v_lds_window, cast_tile<DataType>(value));
+        store_tile(v_lds_window, gdn_cast_tile<DataType>(value));
     }
 
     CK_TILE_DEVICE static void store_v_new_block(LdsStorage& smem,
@@ -1213,13 +1214,13 @@ struct ChunkDeltaHCpSummaryPipeline
                         const float decay = __builtin_amdgcn_exp2f(
                             g_last - g_tile.get_thread_buffer()(e));
                         linear_update(e) =
-                            type_convert<DataType>(-c_at(residual[tt], e) * decay);
+                            gdn_type_convert<DataType>(-c_at(residual[tt], e) * decay);
                         const float affine_value =
                             type_convert<float>(
                                 u_prefetch[tt].get_thread_buffer()(e)) -
                             c_at(affine_residual[tt], e);
                         affine_update(e) =
-                            type_convert<DataType>(affine_value * decay);
+                            gdn_type_convert<DataType>(affine_value * decay);
                     });
                     residual_t[tt] =
                         linear_update.template get_as<AVec>()[number<0>{}];
@@ -1236,7 +1237,7 @@ struct ChunkDeltaHCpSummaryPipeline
                         if constexpr(!ZeroU)
                             value += type_convert<float>(
                                 u_prefetch[tt].get_thread_buffer()(e));
-                        update(e) = type_convert<DataType>(value * decay);
+                        update(e) = gdn_type_convert<DataType>(value * decay);
                     });
                     residual_t[tt] =
                         update.template get_as<AVec>()[number<0>{}];

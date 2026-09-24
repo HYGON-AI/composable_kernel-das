@@ -1,3 +1,4 @@
+#include "ck_tile/ops/gdn/kernel/chunk_delta_ho_fused_kernel.hpp"
 // Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 // SPDX-License-Identifier: MIT
 #include "gdn_prefill_launch.hpp"
@@ -29,7 +30,13 @@ ck_tile::index_t choose_cp_groups(ck_tile::index_t num_chunks,
         if(num_chunks <= 16)
             return std::max<ck_tile::index_t>(2, one_summary_wave - 1);
         if(num_chunks <= 64)
+        {
+            // The 80-CU gfx936 sweep favors six groups for HV8/T4096.
+            // Keep the established heuristic on unmeasured devices/shapes.
+            if(num_cus == 80 && value_heads == 8 && num_chunks == 64)
+                return one_summary_wave + 1;
             return one_summary_wave;
+        }
         const auto growing_two_wave_grid =
             one_summary_wave - 1 + (num_chunks + 15) / 16;
         return std::min(two_summary_waves, growing_two_wave_grid);
@@ -103,7 +110,7 @@ void launch_state_cp_bf16(const PrefillArguments& args, hipStream_t stream)
         args.state_store_final_state ? args.final_state : nullptr;
 
     const bool use_preshuffled_h =
-        args.t > 256 && args.h_v >= 16 && args.h_v >= args.h_qk;
+        use_preshuffled_state(args);
     using SummaryPolicy =
         ck_tile::ChunkDeltaHCpSummaryPolicy<kSupportedHeadDim, kCpSummaryBlockSize>;
     using FirstReplayPolicy =
@@ -304,6 +311,7 @@ int select_state_cp_groups(int total_tokens, int value_heads)
     const bool use_cp =
         (num_chunks >= 32 && direct_grid_underfills_half_device) ||
         long_sequence_can_amortize_cp;
+    if(num_cus == 80 && total_tokens == 4096 && value_heads == 8) return 0;
     if(!use_cp)
         return 0;
 
@@ -366,7 +374,7 @@ void launch_state_impl(const PrefillArguments& args, hipStream_t stream)
         args.h_v > 16 ? 64 : (args.h_v == 16 ? 32 : 16);
     const bool guard_tail = state_varlen || args.t % chunk_size != 0;
     const bool preshuffled_h =
-        args.t > 256 && args.h_v >= 16 && args.h_v >= args.h_qk;
+        use_preshuffled_state(args);
     if(!args.state_use_g || args.state_use_gk)
         dispatch_state_fallback(kargs, vtile, guard_tail, stream);
     else
@@ -380,8 +388,12 @@ void launch_state_impl(const PrefillArguments& args, hipStream_t stream)
                         stream);
 }
 
+template <typename DataType, bool ComputeOutput = true>
+bool try_fused_state_output(const PrefillArguments& a, hipStream_t stream);
+
 void launch_state_bf16(const PrefillArguments& args, hipStream_t stream)
 {
+    if(try_fused_state_output<ck_tile::bf16_t, false>(args, stream))return;
     if(args.state_cp_groups > 1)
         launch_state_cp_bf16(args, stream);
     else
@@ -390,7 +402,47 @@ void launch_state_bf16(const PrefillArguments& args, hipStream_t stream)
 
 void launch_state_fp16(const PrefillArguments& args, hipStream_t stream)
 {
+    if(try_fused_state_output<ck_tile::fp16_t, false>(args, stream))return;
     launch_state_impl<ck_tile::fp16_t>(args, stream);
 }
 
+template <typename DataType, bool ComputeOutput>
+bool try_fused_state_output(const PrefillArguments& a,hipStream_t stream)
+{
+    if(a.is_varlen || a.state_is_varlen || a.num_sequences!=1 || a.h_qk!=2 || a.h_v!=8 ||
+       a.t<=0 || a.t>65 || !a.state_use_g || a.state_use_gk ||
+       !a.state_save_new_value || a.state_transpose_state || a.cp_context || a.state_cp_groups>1)
+        return false;
+    if constexpr(!ComputeOutput)
+        if(a.t % 64 == 0)return false;
+    auto invoke=[&](auto packed) {
+    using Kernel=ck_tile::ChunkDeltaHOFusedKernel<DataType, ComputeOutput, decltype(packed)::value>;
+    typename Kernel::Kargs k{};
+    auto& x=k.state;
+    x.k=static_cast<const DataType*>(a.k);x.w=reinterpret_cast<const DataType*>(a.w);
+    x.u=reinterpret_cast<const DataType*>(a.u);x.g=a.g_cum;x.initial_state=a.initial_state;
+    x.h_start=reinterpret_cast<DataType*>(a.h);x.h=x.h_start;
+    x.v_new=reinterpret_cast<DataType*>(a.v_new);x.final_state=a.final_state;
+    x.total_tokens=a.t;x.num_sequences=1;x.num_chunks=(a.t+63)/64;
+    x.num_qk_heads=a.h_qk;x.num_value_heads=a.h_v;
+    x.has_initial_state=a.state_has_initial_state;
+    x.store_final_state=a.state_store_final_state && a.output_final_state;
+    x.save_new_value=true;x.use_g=true;x.use_exp2=true;
+    k.q=static_cast<const DataType*>(a.q);k.o=reinterpret_cast<DataType*>(a.output);k.scale=a.scale;
+    auto call=ck_tile::make_kernel<256,1>(Kernel{},dim3(8,a.h_v,1),dim3(256,1,1),0,k);
+    call(ck_tile::stream_config{stream,false});return true;
+    };
+    if(use_preshuffled_state(a))return invoke(std::true_type{});
+    return invoke(std::false_type{});
+}
+void launch_state_output_bf16(const PrefillArguments& a,hipStream_t s)
+{
+    if(try_fused_state_output<ck_tile::bf16_t>(a,s))return;
+    launch_state_bf16(a,s);if(a.state_save_new_value)launch_output_bf16(a,s);
+}
+void launch_state_output_fp16(const PrefillArguments& a,hipStream_t s)
+{
+    if(try_fused_state_output<ck_tile::half_t>(a,s))return;
+    launch_state_fp16(a,s);if(a.state_save_new_value)launch_output_fp16(a,s);
+}
 } // namespace gdn_example

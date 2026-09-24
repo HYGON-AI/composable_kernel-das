@@ -7,7 +7,7 @@
 
 namespace ck_tile {
 
-template <typename Policy, bool ScalarGHeadwiseFastPath = false>
+template <typename Policy, bool ScalarGHeadwiseFastPath = false, bool BetaSigmoid = false, bool RawGateFastPath = false>
 struct GdnFusedRecurrentPipeline
 {
     using Problem = typename Policy::Problem;
@@ -31,6 +31,28 @@ struct GdnFusedRecurrentPipeline
         return reinterpret_cast<const float*>(pointer)[offset];
     }
 
+    // Stable softplus for the common raw-gate path. The low branch avoids
+    // cancellation in log(1 + exp(x)); eight Taylor terms at exp(x)<exp(-2)
+    // have a relative truncation error below 2e-8. High/NaN/Inf follow the
+    // original threshold contract. BF16 conversion still uses STANDARD RNE.
+    CK_TILE_DEVICE static float raw_gate_softplus(float x)
+    {
+        if(x >= 20.0f || x != x) return x;
+        const float y = __expf(x);
+        if(x < -2.0f)
+        {
+            float p = -1.0f / 8.0f;
+            p = fmaf(p,y,1.0f/7.0f);
+            p = fmaf(p,y,-1.0f/6.0f);
+            p = fmaf(p,y,1.0f/5.0f);
+            p = fmaf(p,y,-1.0f/4.0f);
+            p = fmaf(p,y,1.0f/3.0f);
+            p = fmaf(p,y,-1.0f/2.0f);
+            return y * fmaf(p,y,1.0f);
+        }
+        return __logf(1.0f + y);
+    }
+
     CK_TILE_DEVICE static float gate_exp(float value, bool use_exp2)
     {
         return use_exp2 ? exp2f(value) : expf(value);
@@ -44,7 +66,7 @@ struct GdnFusedRecurrentPipeline
             pointer + base,
             make_tuple(number<1>{}, key_dim),
             make_tuple(number<0>{}, number<1>{}),
-            number<1>{},
+            number<Policy::kQKVector>{},
             number<1>{});
         auto window = make_tile_window(
             view,
@@ -130,6 +152,28 @@ struct GdnFusedRecurrentPipeline
         auto state =
             make_static_distributed_tensor<AccDataType>(
                 Policy::MakeStateDistribution());
+        if constexpr(RawGateFastPath && Policy::kValueTile == 16 && Policy::kBlockSize == 128)
+        {
+            // The two-wave raw-gate specialization owns complete V16/K128
+            // tiles. Consecutive four-key vectors are aligned; each state
+            // element has one owner, including in-place final-state updates.
+            using Vec = float __attribute__((ext_vector_type(4)));
+            constexpr int repeats = decltype(state)::get_thread_buffer_size() / 8;
+            const int lane = get_lane_id();
+            const int row = get_warp_id() * 4 + lane / 16;
+            const long_index_t base = static_cast<long_index_t>(sequence_head) * 128 * 128;
+            static_for<0, repeats, 1>{}([&](auto vr) {
+                static_for<0, 2, 1>{}([&](auto kr) {
+                    const auto* p = reinterpret_cast<const Vec*>(args.initial_state + base +
+                        (value_begin + row + vr * (Policy::kBlockSize / 16)) * 128 +
+                        kr * 64 + (lane % 16) * 4);
+                    state.get_thread_buffer().template set_as<Vec>(number<vr * 2 + kr>{},
+                        __builtin_nontemporal_load(p));
+                });
+            });
+            return state;
+        }
+
         tile_elementwise_inout(
             [](auto& value) { value = 0.0f; }, state);
         if(!args.use_initial_state)
@@ -148,7 +192,7 @@ struct GdnFusedRecurrentPipeline
             args.initial_state + head_base + value_offset,
             make_tuple(valid_values, args.key_dim),
             make_tuple(stride_v, stride_k),
-            number<1>{},
+            number<Policy::kStateVector>{},
             number<1>{});
         auto window = make_tile_window(
             view,
@@ -162,6 +206,21 @@ struct GdnFusedRecurrentPipeline
     template <typename QKTile>
     CK_TILE_DEVICE static void l2_normalize(QKTile& tile)
     {
+        if constexpr(Policy::kStateVector > 1)
+        {
+            float sum = 0.0f;
+            static_for<0, QKTile::get_thread_buffer_size(), 1>{}([&](auto i) {
+                const float x = tile.get_thread_buffer()[i];
+                sum += x * x;
+            });
+            // Q/K are replicated across the four value rows and waves.
+            // Only the 16 key lanes participate in the norm reduction.
+            static_for<0, 4, 1>{}([&](auto i) { sum += __shfl_xor(sum, 1 << i, 16); });
+            const float inv = 1.0f / sqrt(sum + 1.0e-6f);
+            tile_elementwise_inout([&](auto& x) { x *= inv; }, tile);
+        }
+        else
+        {
         const auto square = tile_elementwise_in(
             [](auto value) { return value * value; }, tile);
         const auto add = [](auto lhs, auto rhs) { return lhs + rhs; };
@@ -183,6 +242,8 @@ struct GdnFusedRecurrentPipeline
                 });
             });
         });
+    }
+
     }
 
     template <typename StateTile, typename QKTile>
@@ -292,6 +353,25 @@ struct GdnFusedRecurrentPipeline
                                           index_t value_begin,
                                           index_t valid_values) const
     {
+
+        if constexpr(RawGateFastPath && Policy::kValueTile == 16 && Policy::kBlockSize == 128)
+        {
+            using Vec = float __attribute__((ext_vector_type(4)));
+            constexpr int repeats = StateTile::get_thread_buffer_size() / 8;
+            const int lane = get_lane_id();
+            const int row = get_warp_id() * 4 + lane / 16;
+            const long_index_t base = static_cast<long_index_t>(sequence_head) * 128 * 128;
+            static_for<0, repeats, 1>{}([&](auto vr) {
+                static_for<0, 2, 1>{}([&](auto kr) {
+                    auto* p = reinterpret_cast<Vec*>(args.final_state + base +
+                        (value_begin + row + vr * (Policy::kBlockSize / 16)) * 128 +
+                        kr * 64 + (lane % 16) * 4);
+                    __builtin_nontemporal_store(
+                        state.get_thread_buffer().template get_as<Vec>()[number<vr * 2 + kr>{}], p);
+                });
+            });
+            return;
+        }
         if(!args.store_final_state)
             return;
         const long_index_t head_base =
@@ -307,7 +387,7 @@ struct GdnFusedRecurrentPipeline
             args.final_state + head_base + value_offset,
             make_tuple(valid_values, args.key_dim),
             make_tuple(stride_v, stride_k),
-            number<1>{},
+            number<Policy::kStateVector>{},
             number<1>{});
         auto window = make_tile_window(
             view,
@@ -327,7 +407,7 @@ struct GdnFusedRecurrentPipeline
         const index_t qk_head =
             value_head / (args.value_heads / args.qk_heads);
         const index_t valid_values =
-            min(args.value_dim - value_begin, kValueTile);
+            Policy::kStateVector > 1 ? kValueTile : min(args.value_dim - value_begin, kValueTile);
 
         auto state = load_initial_state(
             args, sequence_head, value_begin, valid_values);
@@ -380,8 +460,9 @@ struct GdnFusedRecurrentPipeline
                     const float a = load_as_float(
                         args.a_log, value_head, args.a_log_dtype);
                     const float softplus =
-                        gate < 20.0f ? log1pf(expf(gate)) : gate;
-                    scalar_decay = expf(-expf(a) * softplus);
+                        RawGateFastPath ? raw_gate_softplus(gate) :
+                        (gate < 20.0f ? log1pf(expf(gate)) : gate);
+                    scalar_decay = RawGateFastPath ? __expf(-__expf(a) * softplus) : expf(-expf(a) * softplus);
                 }
                 else
                 {
@@ -479,6 +560,8 @@ struct GdnFusedRecurrentPipeline
                                 args.beta, beta_offset, args.beta_dtype);
                         }
                     }
+                    if constexpr(BetaSigmoid)
+                        beta = 1.0f / (1.0f + (RawGateFastPath ? __expf(-beta) : expf(-beta)));
                     update(dstr_idx) =
                         beta * (values[dstr_idx] - prediction[dstr_idx]);
                 });

@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 // SPDX-License-Identifier: MIT
 #pragma once
+#include "ck_tile/ops/gdn/gdn_numeric.hpp"
 
 #include <ck_tile/core.hpp>
 
@@ -44,6 +45,10 @@ struct ChunkDeltaHWaveRegPipeline
     static constexpr index_t kHD = Policy::kHeadDim;
     static constexpr index_t kVD = Policy::kValueDim;
     static constexpr index_t kVT = Policy::kVTile;
+    // Only the aligned packed-H V16 path benefits from moving publication
+    // past the preceding LDS handshake. Tail and other layouts keep their
+    // original schedule; every VMEM/LDS fence remains in place.
+    static constexpr bool kDeferHPublication = kVT == 16 && !Policy::kGuardTail && PreshuffledH;
     static constexpr index_t kWaveV = 16;
     static constexpr index_t kComputeWaves = kVT / kWaveV;
     static constexpr index_t kFirstLoaderWave = kComputeWaves;
@@ -58,7 +63,7 @@ struct ChunkDeltaHWaveRegPipeline
     static constexpr index_t kWLdsStride = kWKTile + 12;
     static constexpr index_t kKLdsStride = kWKTile + 12;
     static constexpr index_t kWSmemElements = kBT * kKLdsStride;
-    static constexpr bool kUseFourLdsTiles = kVT == 128;
+    static constexpr bool kUseFourLdsTiles = kVT == 128 || kVT == 16;
     static constexpr index_t kLdsTiles = kUseFourLdsTiles ? 4 : 2;
 
     static_assert(kBT == 64 && kHD == 128 &&
@@ -131,8 +136,8 @@ struct ChunkDeltaHWaveRegPipeline
     template <typename I0, typename I1>
     CK_TILE_DEVICE static uint32_t pack_c_pair(const CVec& c, I0 i0, I1 i1)
     {
-        const uint32_t lo = bit_cast<uint16_t>(type_convert<DataType>(c_at(c, i0)));
-        const uint32_t hi = bit_cast<uint16_t>(type_convert<DataType>(c_at(c, i1)));
+        const uint32_t lo = bit_cast<uint16_t>(gdn_type_convert<DataType>(c_at(c, i0)));
+        const uint32_t hi = bit_cast<uint16_t>(gdn_type_convert<DataType>(c_at(c, i1)));
         return lo | (hi << 16);
     }
 
@@ -145,7 +150,7 @@ struct ChunkDeltaHWaveRegPipeline
         } u{c};
         thread_buffer<DataType, 4> buf;
         static_for<0, 4, 1>{}(
-            [&](auto e) { buf(e) = type_convert<DataType>(u.e[e]); });
+            [&](auto e) { buf(e) = gdn_type_convert<DataType>(u.e[e]); });
         return buf.template get_as<BVec>()[number<0>{}];
     }
 
@@ -254,7 +259,7 @@ struct ChunkDeltaHWaveRegPipeline
                                      ? ptr[static_cast<long_index_t>(row_begin + row) *
                                                row_stride +
                                            x_idx.at(number<1>{})]
-                                     : type_convert<DataType>(0.0f);
+                                     : gdn_type_convert<DataType>(0.0f);
             });
         });
         return tile;
@@ -554,7 +559,7 @@ struct ChunkDeltaHWaveRegPipeline
                                              ? u_base[static_cast<long_index_t>(t_tile * 16 + token) *
                                                           args.num_value_heads * kVD +
                                                       x_idx.at(number<0>{})]
-                                             : type_convert<DataType>(0.0f);
+                                             : gdn_type_convert<DataType>(0.0f);
                     });
                 });
                 return tile;
@@ -673,7 +678,7 @@ struct ChunkDeltaHWaveRegPipeline
     }
 
     CK_TILE_DEVICE static void store_state_preshuffled(DataType* ptr,
-                                                       const CVec* state,
+                                                       const BVec* state,
                                                        index_t v_begin)
     {
         // Physical order consumed by fwd_output's native BReg loader:
@@ -687,10 +692,10 @@ struct ChunkDeltaHWaveRegPipeline
 
         static_for<0, kKTiles, 1>{}([&](auto kt) {
             thread_buffer<uint32_t, 2> output;
-            output(number<0>{}) =
-                pack_c_pair(state[kt], number<0>{}, number<1>{});
-            output(number<1>{}) =
-                pack_c_pair(state[kt], number<2>{}, number<3>{});
+            // The B operand was already rounded for the next projection.
+            // Reuse its exact bits when publishing H instead of converting
+            // the same FP32 accumulator a second time.
+            output.template set_as<BVec>(number<0>{}, state[kt]);
             const index_t k_base = kt * 16 + k_lane * 4;
             const index_t offset =
                 (((v / 16) * 16 + k_base / 8) * 16 + v % 16) * 8 + k_base % 8;
@@ -898,10 +903,13 @@ struct ChunkDeltaHWaveRegPipeline
                 args.h_start +
                 (static_cast<long_index_t>(chunk_base) * args.num_value_heads + vh) *
                     kHD * kVD;
-            if constexpr(PreshuffledH)
-                store_state_preshuffled(first_chunk_state, state, v_begin);
-            else
-                store_state_direct(first_chunk_state, state_b, v_begin);
+            if constexpr(!kDeferHPublication)
+            {
+                if constexpr(PreshuffledH)
+                    store_state_preshuffled(first_chunk_state, state_b, v_begin);
+                else
+                    store_state_direct(first_chunk_state, state_b, v_begin);
+            }
             if(get_warp_id() == 0)
             {
                 load_g_lds(smem, args, bos, vh, min(kBT, eos - bos));
@@ -912,6 +920,18 @@ struct ChunkDeltaHWaveRegPipeline
         for(index_t lc = 0; lc < local_chunks; ++lc)
         {
             const index_t gc = chunk_base + lc;
+            if constexpr(kDeferHPublication)
+            {
+                // Publish this chunk's input state after the LDS handshake.
+                // H is consumed by a later kernel, so its global stores may
+                // overlap projection work; all existing fences are retained.
+                auto* chunk_state = args.h_start +
+                    (static_cast<long_index_t>(gc) * args.num_value_heads + vh) * kHD * kVD;
+                if constexpr(PreshuffledH)
+                    store_state_preshuffled(chunk_state, state_b, v_begin);
+                else
+                    store_state_direct(chunk_state, state_b, v_begin);
+            }
             const index_t token_base = bos + lc * kBT;
             const index_t valid_tokens = min(kBT, eos - token_base);
             const bool has_next_chunk = lc + 1 < local_chunks;
@@ -976,8 +996,8 @@ struct ChunkDeltaHWaveRegPipeline
                     const float value = type_convert<float>(
                                             u.get_thread_buffer()(e)) -
                                         c_at(residual[tt], e);
-                    v_new.get_thread_buffer()(e) = type_convert<DataType>(value);
-                    update(e) = type_convert<DataType>(value * decay);
+                    v_new.get_thread_buffer()(e) = gdn_type_convert<DataType>(value);
+                    update(e) = gdn_type_convert<DataType>(value * decay);
                 });
                 residual_t[tt] =
                     update.template get_as<AVec>()[number<0>{}];
@@ -1031,10 +1051,13 @@ struct ChunkDeltaHWaveRegPipeline
                     args.h_start +
                     (static_cast<long_index_t>(gc + 1) * args.num_value_heads + vh) *
                         kHD * kVD;
-                if constexpr(PreshuffledH)
-                    store_state_preshuffled(next_chunk_state, state, v_begin);
-                else
-                    store_state_direct(next_chunk_state, state_b, v_begin);
+                if constexpr(!kDeferHPublication)
+                {
+                    if constexpr(PreshuffledH)
+                        store_state_preshuffled(next_chunk_state, state_b, v_begin);
+                    else
+                        store_state_direct(next_chunk_state, state_b, v_begin);
+                }
             }
             if(has_next_chunk && get_warp_id() == 0)
             {

@@ -118,13 +118,7 @@ struct GdnRecomputeWUFwdKernel
 
         __shared__ typename Pipeline::SharedStorage scratch;
         using DataType = typename Policy::DataType;
-        // The masked MMAC/LDS path below is BF16-specific. FP16 partial
-        // chunks are handled by GdnRecomputeWUFp16TailKernel instead.
-        if constexpr(MaskedTail && std::is_same_v<DataType, ck_tile::half_t>)
-        {
-            if(token_end - tc < arg.BT)
-                return;
-        }
+        // Tail rows use the dtype-specific MMAC load and masked output layout.
         auto* k_typed = reinterpret_cast<const DataType*>(arg.k);
         auto* v_typed = reinterpret_cast<const DataType*>(arg.v);
         auto* A_typed = reinterpret_cast<const DataType*>(arg.A);
@@ -257,72 +251,6 @@ struct GdnRecomputeWUFwdKernel
     }
 };
 
-// The optimized masked LDS path is BF16-specific. Repair only the partial
-// FP16 sequence chunks with a simple independent calculation; full chunks
-// remain on the optimized pipeline above.
-struct GdnRecomputeWUFp16TailKernel
-{
-    using Kargs = GdnRecomputeWUFwdKernelArg;
-
-    CK_TILE_DEVICE void operator()(Kargs arg) const
-    {
-        const int ivh = blockIdx.x;
-        const int global_chunk = blockIdx.y;
-        int tc = global_chunk * arg.BT;
-        int token_end = arg.T;
-        if(arg.is_varlen)
-        {
-            const int sequence =
-                static_cast<int>(arg.chunk_indices[global_chunk * 2]);
-            const int local_chunk =
-                static_cast<int>(arg.chunk_indices[global_chunk * 2 + 1]);
-            tc = static_cast<int>(arg.cu_seqlens[sequence]) + local_chunk * arg.BT;
-            token_end = static_cast<int>(arg.cu_seqlens[sequence + 1]);
-        }
-        const int valid_rows = token_end - tc;
-        if(valid_rows <= 0 || valid_rows >= arg.BT)
-            return;
-
-        const int ih = ivh / (arg.HV / arg.H);
-        const auto* k = reinterpret_cast<const ck_tile::half_t*>(arg.k);
-        const auto* v = reinterpret_cast<const ck_tile::half_t*>(arg.v);
-        const auto* a = reinterpret_cast<const ck_tile::half_t*>(arg.A);
-        auto* w = reinterpret_cast<ck_tile::half_t*>(arg.w);
-        auto* u = reinterpret_cast<ck_tile::half_t*>(arg.u);
-
-        for(int index = threadIdx.x; index < valid_rows * 128;
-            index += blockDim.x)
-        {
-            const int row = index / 128;
-            const int col = index % 128;
-            float w_acc = 0.0f;
-            float u_acc = 0.0f;
-            for(int j = 0; j < valid_rows; ++j)
-            {
-                const size_t a_offset =
-                    (static_cast<size_t>(tc + row) * arg.HV + ivh) * 64 + j;
-                const float a_value = ck_tile::type_convert<float>(a[a_offset]);
-                const float beta =
-                    arg.beta[static_cast<size_t>(tc + j) * arg.HV + ivh];
-                const float gate = arg.use_exp2
-                    ? exp2f(arg.g_cum[static_cast<size_t>(tc + j) * arg.HV + ivh])
-                    : expf(arg.g_cum[static_cast<size_t>(tc + j) * arg.HV + ivh]);
-                const size_t v_offset =
-                    (static_cast<size_t>(tc + j) * arg.HV + ivh) * 128 + col;
-                const size_t k_offset =
-                    (static_cast<size_t>(tc + j) * arg.H + ih) * 128 + col;
-                u_acc += a_value * beta * ck_tile::type_convert<float>(v[v_offset]);
-                w_acc += a_value * beta * gate *
-                         ck_tile::type_convert<float>(k[k_offset]);
-            }
-            const size_t out_offset =
-                (static_cast<size_t>(tc + row) * arg.HV + ivh) * 128 + col;
-            u[out_offset] = ck_tile::type_convert<ck_tile::half_t>(u_acc);
-            w[out_offset] = ck_tile::type_convert<ck_tile::half_t>(w_acc);
-        }
-    }
-};
-
 template <typename Policy>
 struct GdnRecomputeWUFwdInvoker
 {
@@ -347,19 +275,23 @@ struct GdnRecomputeWUFwdInvoker
         {
             if(!is_varlen && T % Policy::kChunkSize != 0)
             {
-                using Kernel = GdnRecomputeWUFwdKernel<Policy, false, false, true>;
-                auto kargs = Kernel::MakeKargs(k, v, beta, A, g_cum, w, u,
-                                               T, H, HV, K_dim, V_dim, use_exp2);
-                const auto grid = Kernel::GridSize(kargs);
-                constexpr auto block = Kernel::BlockSize();
-                ck_tile::launch_kernel(
-                    stream_cfg,
-                    ck_tile::make_kernel<block.x, Policy::kLaunchMinBlocks>(
-                        Kernel{}, grid, block, 0, kargs));
-                ck_tile::launch_kernel(
-                    stream_cfg,
-                    ck_tile::make_kernel<256, 1>(
-                        GdnRecomputeWUFp16TailKernel{}, grid, dim3(256), 0, kargs));
+                auto launch = [&](auto split) {
+                    using Kernel = GdnRecomputeWUFwdKernel<
+                        Policy, decltype(split)::value, false, true>;
+                    auto kargs = Kernel::MakeKargs(k, v, beta, A, g_cum, w, u,
+                                                   T, H, HV, K_dim, V_dim, use_exp2);
+                    const auto grid = Kernel::GridSize(kargs);
+                    constexpr auto block = Kernel::BlockSize();
+                    ck_tile::launch_kernel(
+                        stream_cfg,
+                        ck_tile::make_kernel<block.x, Policy::kLaunchMinBlocks>(
+                            Kernel{}, grid, block, 0, kargs));
+                };
+                if(T < 1024 ||
+                   (H == 2 && HV == 8 && K_dim == 128 && V_dim == 128 && T <= 8192))
+                    launch(std::true_type{});
+                else
+                    launch(std::false_type{});
                 return;
             }
         }
@@ -389,17 +321,6 @@ struct GdnRecomputeWUFwdInvoker
                 stream_cfg,
                 ck_tile::make_kernel<block.x, Policy::kLaunchMinBlocks>(
                     Kernel{}, grid, block, 0, kargs));
-            if constexpr(std::is_same_v<typename Policy::DataType, ck_tile::half_t>)
-            {
-                ck_tile::launch_kernel(
-                    stream_cfg,
-                    ck_tile::make_kernel<256, 1>(
-                        GdnRecomputeWUFp16TailKernel{},
-                        dim3(HV, num_chunks, 1),
-                        dim3(256, 1, 1),
-                        0,
-                        kargs));
-            }
             return;
         }
         if(T < 1024 && T % Policy::kChunkSize != 0)
@@ -418,7 +339,10 @@ struct GdnRecomputeWUFwdInvoker
                 return;
             }
         }
-        if(T < 1024)
+        // Existing split-W/U schedule, extended only over the measured FP16 range.
+        if(T < 1024 ||
+           (std::is_same_v<typename Policy::DataType, ck_tile::half_t> &&
+            H == 2 && HV == 8 && K_dim == 128 && V_dim == 128 && T <= 8192))
         {
             using Kernel = GdnRecomputeWUFwdKernel<Policy, true>;
             auto kargs = Kernel::MakeKargs(k, v, beta, A, g_cum, w, u,

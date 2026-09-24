@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 // SPDX-License-Identifier: MIT
 #pragma once
+#include "ck_tile/ops/gdn/gdn_numeric.hpp"
 
 #include "ck_tile/ops/gdn/pipeline/gdn_fwd_output_policy.hpp"
 
@@ -268,7 +269,7 @@ CK_TILE_DEVICE void GdnOutputFwdPipeline<Problem>::operator()(Kargs args) const
             }
             gated_score(idx) = value;
         });
-        auto score_store_tile = ck_tile::cast_tile<DataType>(gated_score);
+        auto score_store_tile = ck_tile::gdn_cast_tile<DataType>(gated_score);
         constexpr auto score_desc =
             Policy::template MakePaddedRowMajorLdsDescriptor<
                 kRowTile, kChunkSize, Problem::Config::kScorePadding>();
@@ -312,7 +313,8 @@ CK_TILE_DEVICE void GdnOutputFwdPipeline<Problem>::operator()(Kargs args) const
             });
         });
 
-        constexpr ck_tile::index_t kNumValueTiles = (kValueDim + kValueTile - 1) / kValueTile;
+        constexpr ck_tile::index_t kNumValueTiles = (kValueDim + kValueTile - 1) / kValueTile / Problem::kValueSplit;
+        const ck_tile::index_t value_tile_begin = blockIdx.z * kNumValueTiles;
         constexpr auto qh_gemm = QHGemm{};
         constexpr auto pv_gemm = PVGemm{};
 
@@ -384,12 +386,12 @@ CK_TILE_DEVICE void GdnOutputFwdPipeline<Problem>::operator()(Kargs args) const
             return tile;
         };
 
-        auto h_prefetch_tile = load_h_copy_tile(0);
-        auto v_prefetch_tile = load_v_copy_tile(0);
+        auto h_prefetch_tile = load_h_copy_tile(value_tile_begin * kValueTile);
+        auto v_prefetch_tile = load_v_copy_tile(value_tile_begin * kValueTile);
 
         for(ck_tile::index_t value_tile = 0; value_tile < kNumValueTiles; ++value_tile)
         {
-            const ck_tile::index_t value_begin = value_tile * kValueTile;
+            const ck_tile::index_t value_begin = (value_tile_begin + value_tile) * kValueTile;
 
             constexpr auto h_lds_store_desc =
                 Policy::template MakePaddedRowMajorLdsDescriptor<
@@ -451,7 +453,7 @@ CK_TILE_DEVICE void GdnOutputFwdPipeline<Problem>::operator()(Kargs args) const
             const ck_tile::index_t next_vt = value_tile + 1;
             if(next_vt < kNumValueTiles)
             {
-                const ck_tile::index_t next_v_begin = next_vt * kValueTile;
+                const ck_tile::index_t next_v_begin = (value_tile_begin + next_vt) * kValueTile;
 
                 h_prefetch_tile = load_h_copy_tile(next_v_begin);
                 v_prefetch_tile = load_v_copy_tile(next_v_begin);
@@ -479,7 +481,7 @@ CK_TILE_DEVICE void GdnOutputFwdPipeline<Problem>::operator()(Kargs args) const
             }, output_tile_float, local_logical);
 
             // 11. Epilogue LDS Exchange & 16-byte Vector Coalesced Write-back
-            auto output_tile = ck_tile::cast_tile<DataType>(output_tile_float);
+            auto output_tile = ck_tile::gdn_cast_tile<DataType>(output_tile_float);
 
             // A. Store output_tile to LDS (using the 4 KiB workspace segment of score_lds)
             constexpr auto epilogue_lds_desc =

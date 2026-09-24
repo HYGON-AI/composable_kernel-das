@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 // SPDX-License-Identifier: MIT
 #pragma once
+#include "ck_tile/ops/gdn/gdn_numeric.hpp"
 
 // Included from gdn_fwd_output_pipeline.hpp inside namespace gdn, after the
 // pipeline and vector-load helpers are declared.
@@ -23,11 +24,8 @@ CK_TILE_DEVICE void gdn_output_tiled_two_rows(
     constexpr ck_tile::index_t kScoreStride =
         kChunkSize + Problem::Config::kScorePadding;
     constexpr ck_tile::index_t kLdsPadding = Problem::Config::kLdsPadding;
-    constexpr bool kDirectLogicalH =
-        GroupSize == 4 ||
-        (GroupSize == 2 && Problem::Config::kDirectLogicalHForGroup2) ||
-        (GroupSize == 1 && Problem::kTwoRows);
-    constexpr bool kUseHLds = !kDirectLogicalH;
+    static_assert(GroupSize == 2 || GroupSize == 4 ||
+                  (GroupSize == 1 && Problem::kTwoRows));
     static_assert(kValueTile == 32);
     static_assert((kValueDim / kValueTile) % kValueSplit == 0);
 
@@ -111,26 +109,22 @@ CK_TILE_DEVICE void gdn_output_tiled_two_rows(
     static_assert(kGateLdsOffsetBytes % alignof(float) == 0);
     static_assert(kGateLdsOffsetBytes + kGateLdsBytes <=
                   kIoLdsElements * sizeof(DataType));
+    // Direct H/V need no shared staging during the value loop. Both output
+    // row tiles fit in the score workspace below the still-live gate vector.
     constexpr bool kUsePairedEpilogue =
-        GroupSize == 2 && Problem::Config::kUsePairedEpilogue;
-    constexpr bool kDirectLogicalV = Problem::Config::kDirectLogicalVForGroup2;
+        Problem::kPairedEpilogue;
     constexpr ck_tile::index_t kPairedEpilogueElements =
         kUsePairedEpilogue ? 2 * kRowTile * kValueTile : 0;
     constexpr ck_tile::index_t kIoLdsBytes =
         kIoLdsElements * sizeof(DataType);
-    constexpr ck_tile::index_t kPairedEpilogueBytes =
-        kPairedEpilogueElements * sizeof(DataType);
+    static_assert(kPairedEpilogueElements * sizeof(DataType) <= kGateLdsOffsetBytes);
+    constexpr ck_tile::index_t kPairedEpilogueBytes = 0;
     __shared__ char shared_lds_bytes[kIoLdsBytes + kPairedEpilogueBytes];
     DataType* const io_lds = reinterpret_cast<DataType*>(shared_lds_bytes);
     DataType* const score_lds = io_lds;
-    DataType* const h_lds = io_lds;
-    DataType* const v_lds = io_lds;
-    // GroupSize=2 keeps both 32x32 row outputs alive across the second row
-    // GEMM in a disjoint 4-KiB region. GroupSize=4 retains the original 16-KiB
-    // alias path because the extra LDS slightly regresses long sequences.
-    DataType* const epilogue_lds =
-        reinterpret_cast<DataType*>(shared_lds_bytes +
-                                    (kUsePairedEpilogue ? kIoLdsBytes : 0));
+    // Both score tiles are already in registers before the epilogue begins.
+    // Their 4-KiB region is dead and disjoint from the live gates at 4608 B.
+    DataType* const epilogue_lds = io_lds;
     float* const gate_lds = reinterpret_cast<float*>(
         shared_lds_bytes + kGateLdsOffsetBytes);
 
@@ -212,16 +206,6 @@ CK_TILE_DEVICE void gdn_output_tiled_two_rows(
             kRowTile,
             kChunkSize,
             Problem::Config::kScorePadding>();
-    constexpr auto h_desc =
-        Policy::template MakePaddedTransposeLdsDescriptor<
-            kHeadDim,
-            kValueTile,
-            Problem::Config::kLdsPadding>();
-    constexpr auto v_desc =
-        Policy::template MakePaddedTransposeLdsDescriptor<
-            kChunkSize,
-            kValueTile,
-            Problem::Config::kLdsPadding>();
 
     constexpr auto qh_gemm = QHGemm{};
     constexpr auto pv_gemm = PVGemm{};
@@ -282,7 +266,7 @@ CK_TILE_DEVICE void gdn_output_tiled_two_rows(
                             gate_lds[col];
                 gated_score(idx) = value;
             });
-            auto score_store_tile = ck_tile::cast_tile<DataType>(gated_score);
+            auto score_store_tile = ck_tile::gdn_cast_tile<DataType>(gated_score);
             auto score_store_view =
                 ck_tile::make_tensor_view<ck_tile::address_space_enum::lds>(
                     score_lds, score_desc);
@@ -315,6 +299,8 @@ CK_TILE_DEVICE void gdn_output_tiled_two_rows(
 
         auto make_q_gated = [&](const auto& q_for_h, ck_tile::index_t row_begin) {
             auto q_gated = q_for_h;
+            // Direct H/V leave the gate LDS region live through the epilogue.
+            if constexpr(std::is_same_v<DataType, ck_tile::fp16_t> && Problem::kPairedEpilogue && GroupSize == 4) return q_gated;
             constexpr auto spans = decltype(q_gated)::get_distributed_spans();
             ck_tile::sweep_tile_span(spans[ck_tile::number<0>{}], [&](auto idx0) {
                 ck_tile::sweep_tile_span(spans[ck_tile::number<1>{}], [&](auto idx1) {
@@ -332,38 +318,6 @@ CK_TILE_DEVICE void gdn_output_tiled_two_rows(
 
         auto q_gated0 = make_q_gated(q_for_h0, 0);
         auto q_gated1 = make_q_gated(q_for_h1, kRowTile);
-
-        constexpr auto h_copy_distribution =
-            Policy::template MakeGlobalCopyDistribution<kHeadDim, kValueTile>();
-        auto load_h_copy_tile = [&](ck_tile::index_t value_begin) {
-            const DataType* h_base =
-                args.h +
-                (static_cast<int64_t>(global_chunk) * args.num_value_heads + vh) *
-                    kHeadDim * kValueDim +
-                value_begin;
-            auto h_dram_view =
-                ck_tile::make_naive_tensor_view<ck_tile::address_space_enum::global>(
-                    h_base,
-                    ck_tile::make_tuple(ck_tile::number<kHeadDim>{},
-                                        ck_tile::number<kValueTile>{}),
-                    ck_tile::make_tuple(ck_tile::number<kValueDim>{},
-                                        ck_tile::number<1>{}),
-                    ck_tile::number<8>{},
-                    ck_tile::number<1>{});
-            auto h_dram_window = ck_tile::make_tile_window(
-                h_dram_view,
-                ck_tile::make_tuple(ck_tile::number<kHeadDim>{},
-                                    ck_tile::number<kValueTile>{}),
-                ck_tile::multi_index<2>{0, 0},
-                h_copy_distribution);
-            return ck_tile::load_tile(h_dram_window,
-                                      ck_tile::bool_constant<false>{});
-        };
-
-        auto prefetched_h_copy =
-            ck_tile::make_static_distributed_tensor<DataType>(h_copy_distribution);
-        if constexpr(kUseHLds)
-            prefetched_h_copy = load_h_copy_tile(value_tile_offset * kValueTile);
 
         for(ck_tile::index_t local_value_tile = 0;
             local_value_tile < kValueTilesPerSplit;
@@ -387,7 +341,7 @@ CK_TILE_DEVICE void gdn_output_tiled_two_rows(
                     return Policy::template LoadPreshuffledH<QHProblem, QHPolicy>(
                         h_head_base, value_begin);
                 }
-                else if constexpr(kDirectLogicalH)
+                else
                 {
                     // H is physically [K, value_dim].  Expose it as logical
                     // [N, K] and load directly into the MMAC B distribution.
@@ -396,21 +350,6 @@ CK_TILE_DEVICE void gdn_output_tiled_two_rows(
                         (static_cast<int64_t>(global_chunk) * args.num_value_heads + vh) *
                             kHeadDim * kValueDim +
                         value_begin;
-                    if constexpr(GroupSize == 4 &&
-                                 Problem::Config::kPackedRawHPrototype)
-                    {
-                        const DataType* h_head_base = h_base - value_begin;
-                        auto packed = Policy::template MakePackedBRegTile<
-                            QHProblem, QHPolicy>();
-                        Policy::template IssuePackedHRaw<QHProblem, QHPolicy>(
-                            packed, h_head_base, value_begin, kValueDim);
-                        __builtin_amdgcn_sched_barrier(0);
-                        ck_tile::buffer_load_fence(
-                            0, packed.get_thread_buffer());
-                        __builtin_amdgcn_sched_barrier(0);
-                        return Policy::template UnpackPackedH<
-                            QHProblem, QHPolicy>(packed);
-                    }
                     const auto h_global_desc = ck_tile::make_naive_tensor_descriptor(
                         ck_tile::make_tuple(ck_tile::number<kValueTile>{},
                                             ck_tile::number<kHeadDim>{}),
@@ -430,52 +369,9 @@ CK_TILE_DEVICE void gdn_output_tiled_two_rows(
                     ck_tile::load_tile(tile, window);
                     return tile;
                 }
-                else
-                {
-                    constexpr auto h_lds_store_desc =
-                        Policy::template MakePaddedRowMajorLdsDescriptor<
-                            kHeadDim,
-                            kValueTile,
-                            kLdsPadding>();
-                    auto h_lds_store_view =
-                        ck_tile::make_tensor_view<ck_tile::address_space_enum::lds>(
-                            h_lds, h_lds_store_desc);
-                    auto h_lds_store_window = ck_tile::make_tile_window(
-                        h_lds_store_view,
-                        ck_tile::make_tuple(ck_tile::number<kHeadDim>{},
-                                            ck_tile::number<kValueTile>{}),
-                        ck_tile::multi_index<2>{0, 0},
-                        h_copy_distribution);
-                    ck_tile::store_tile(h_lds_store_window, prefetched_h_copy);
-                    ck_tile::block_sync_lds();
-                    auto h_view =
-                        ck_tile::make_tensor_view<ck_tile::address_space_enum::lds>(
-                            h_lds, h_desc);
-                    auto tile =
-                        Policy::template MakeBRegTile<QHProblem, QHPolicy>();
-                    auto h_window = ck_tile::make_tile_window(
-                        h_view,
-                        ck_tile::make_tuple(ck_tile::number<kValueTile>{},
-                                            ck_tile::number<kHeadDim>{}),
-                        {0, 0},
-                        tile.get_tile_distribution());
-                    ck_tile::load_tile(tile, h_window);
-                    ck_tile::block_sync_lds();
-                    return tile;
-                }
             }();
 
-            auto next_h_copy =
-                ck_tile::make_static_distributed_tensor<DataType>(h_copy_distribution);
-            if constexpr(kUseHLds)
-            {
-                if(local_value_tile + 1 < kValueTilesPerSplit)
-                    next_h_copy = load_h_copy_tile(value_begin + kValueTile);
-            }
-
-            // V: loaded once and reused by both row tiles.  The direct path
-            // exposes physical [K,value_dim] as logical [N,K], matching the
-            // native PV MMAC BReg distribution without an LDS transpose.
+            // Load V once for both row tiles in the native MMAC B layout.
             const DataType* v_base =
                 args.v_new +
                 (static_cast<int64_t>(token_begin) * args.num_value_heads + vh) *
@@ -484,105 +380,40 @@ CK_TILE_DEVICE void gdn_output_tiled_two_rows(
             auto v_breg = [&]() {
                 auto tile =
                     Policy::template MakeBRegTile<PVProblem, PVPolicy>();
-                if constexpr(kDirectLogicalV)
-                {
-                    const auto v_global_desc = ck_tile::make_naive_tensor_descriptor(
-                        ck_tile::make_tuple(ck_tile::number<kValueTile>{},
-                                            valid_tokens),
-                        ck_tile::make_tuple(ck_tile::number<1>{},
-                                            args.num_value_heads * kValueDim));
-                    const auto v_global_view =
-                        ck_tile::make_tensor_view<ck_tile::address_space_enum::global>(
-                            v_base, v_global_desc);
-                    auto v_padded_view = ck_tile::pad_tensor_view(
-                        v_global_view,
-                        ck_tile::make_tuple(ck_tile::number<kValueTile>{},
-                                            ck_tile::number<kChunkSize>{}),
-                        ck_tile::sequence<false, true>{});
-                    auto window = ck_tile::make_tile_window(
-                        v_padded_view,
-                        ck_tile::make_tuple(ck_tile::number<kValueTile>{},
-                                            ck_tile::number<kChunkSize>{}),
-                        ck_tile::multi_index<2>{0, 0},
-                        tile.get_tile_distribution());
-                    if(full_chunk)
-                        ck_tile::load_tile(tile,
-                                           window,
-                                           ck_tile::bool_constant<false>{});
-                    else
-                        ck_tile::load_tile(tile,
-                                           window,
-                                           ck_tile::bool_constant<true>{});
-                }
+                const auto v_global_desc = ck_tile::make_naive_tensor_descriptor(
+                    ck_tile::make_tuple(ck_tile::number<kValueTile>{},
+                                        valid_tokens),
+                    ck_tile::make_tuple(ck_tile::number<1>{},
+                                        args.num_value_heads * kValueDim));
+                const auto v_global_view =
+                    ck_tile::make_tensor_view<ck_tile::address_space_enum::global>(
+                        v_base, v_global_desc);
+                auto v_padded_view = ck_tile::pad_tensor_view(
+                    v_global_view,
+                    ck_tile::make_tuple(ck_tile::number<kValueTile>{},
+                                        ck_tile::number<kChunkSize>{}),
+                    ck_tile::sequence<false, true>{});
+                auto window = ck_tile::make_tile_window(
+                    v_padded_view,
+                    ck_tile::make_tuple(ck_tile::number<kValueTile>{},
+                                        ck_tile::number<kChunkSize>{}),
+                    ck_tile::multi_index<2>{0, 0},
+                    tile.get_tile_distribution());
+                if(full_chunk)
+                    ck_tile::load_tile(tile,
+                                       window,
+                                       ck_tile::bool_constant<false>{});
                 else
-                {
-                    constexpr auto v_copy_distribution =
-                        Policy::template MakeGlobalCopyDistribution<kChunkSize,
-                                                                    kValueTile>();
-                    auto v_dram_view = ck_tile::make_naive_tensor_view<
-                        ck_tile::address_space_enum::global>(
-                        v_base,
-                        ck_tile::make_tuple(valid_tokens,
-                                            ck_tile::number<kValueTile>{}),
-                        ck_tile::make_tuple(args.num_value_heads * kValueDim,
-                                            ck_tile::number<1>{}),
-                        ck_tile::number<8>{},
-                        ck_tile::number<1>{});
-                    auto v_padded_view = ck_tile::pad_tensor_view(
-                        v_dram_view,
-                        ck_tile::make_tuple(ck_tile::number<kChunkSize>{},
-                                            ck_tile::number<kValueTile>{}),
-                        ck_tile::sequence<true, false>{});
-                    auto v_dram_window = ck_tile::make_tile_window(
-                        v_padded_view,
-                        ck_tile::make_tuple(ck_tile::number<kChunkSize>{},
-                                            ck_tile::number<kValueTile>{}),
-                        ck_tile::multi_index<2>{0, 0},
-                        v_copy_distribution);
-                    auto v_copy_tile = ck_tile::make_static_distributed_tensor<DataType>(
-                        v_copy_distribution);
-                    if(full_chunk)
-                        ck_tile::load_tile(v_copy_tile,
-                                           v_dram_window,
-                                           ck_tile::bool_constant<false>{});
-                    else
-                        ck_tile::load_tile(v_copy_tile,
-                                           v_dram_window,
-                                           ck_tile::bool_constant<true>{});
+                    ck_tile::load_tile(tile,
+                                       window,
+                                       ck_tile::bool_constant<true>{});
 
-                    constexpr auto v_lds_store_desc =
-                        Policy::template MakePaddedRowMajorLdsDescriptor<
-                            kChunkSize,
-                            kValueTile,
-                            kLdsPadding>();
-                    auto v_lds_store_view = ck_tile::make_tensor_view<
-                        ck_tile::address_space_enum::lds>(v_lds,
-                                                         v_lds_store_desc);
-                    auto v_lds_store_window = ck_tile::make_tile_window(
-                        v_lds_store_view,
-                        ck_tile::make_tuple(ck_tile::number<kChunkSize>{},
-                                            ck_tile::number<kValueTile>{}),
-                        ck_tile::multi_index<2>{0, 0},
-                        v_copy_distribution);
-                    ck_tile::store_tile(v_lds_store_window, v_copy_tile);
-                    ck_tile::block_sync_lds();
-                    auto v_view = ck_tile::make_tensor_view<
-                        ck_tile::address_space_enum::lds>(v_lds, v_desc);
-                    auto v_window = ck_tile::make_tile_window(
-                        v_view,
-                        ck_tile::make_tuple(ck_tile::number<kValueTile>{},
-                                            ck_tile::number<kChunkSize>{}),
-                        ck_tile::multi_index<2>{0, 0},
-                        tile.get_tile_distribution());
-                    ck_tile::load_tile(tile, v_window);
-                    ck_tile::block_sync_lds();
-                }
                 return tile;
             }();
 
             auto compute_and_stage = [&](const auto& q_gated,
                                          const auto& score_areg,
-                                         ck_tile::index_t epilogue_offset) {
+                                         ck_tile::index_t epilogue_offset, ck_tile::index_t row_begin) {
                 auto hist = QHGemm::MakeCBlockTile();
                 ck_tile::clear_tile(hist);
                 qh_gemm(hist, q_gated, h_breg);
@@ -594,11 +425,19 @@ CK_TILE_DEVICE void gdn_output_tiled_two_rows(
                     Policy::template MakeCOutputLayout<QHProblem, QHPolicy>(hist);
                 auto local_logical =
                     Policy::template MakeCOutputLayout<PVProblem, PVPolicy>(local);
+                if constexpr(std::is_same_v<DataType, ck_tile::fp16_t> && Problem::kPairedEpilogue && GroupSize == 4)
+                {
+                    ck_tile::sweep_tile(output_float, [&](auto idx) {
+                        const auto coord=ck_tile::get_x_indices_from_distributed_indices(
+                            output_float.get_tile_distribution(),idx);
+                        output_float(idx) *= gate_lds[kChunkSize+row_begin+coord[ck_tile::number<0>{}]];
+                    });
+                }
                 ck_tile::tile_elementwise_inout(
                     [&](auto& x, const auto& y) { x = (x + y) * args.scale; },
                     output_float,
                     local_logical);
-                auto output_tile = ck_tile::cast_tile<DataType>(output_float);
+                auto output_tile = ck_tile::gdn_cast_tile<DataType>(output_float);
 
                 constexpr auto epilogue_desc =
                     Policy::template MakePaddedRowMajorLdsDescriptor<
@@ -623,8 +462,8 @@ CK_TILE_DEVICE void gdn_output_tiled_two_rows(
                 // 256 lanes perform one useful vec8 output store.
                 constexpr ck_tile::index_t kEpilogueTileElements =
                     kRowTile * kValueTile;
-                compute_and_stage(q_gated0, score_areg0, 0);
-                compute_and_stage(q_gated1, score_areg1, kEpilogueTileElements);
+                compute_and_stage(q_gated0, score_areg0, 0, 0);
+                compute_and_stage(q_gated1, score_areg1, kEpilogueTileElements, kRowTile);
                 ck_tile::block_sync_lds();
                 constexpr auto o_copy_distribution =
                     Policy::template MakeOutputCopyDistribution<kChunkSize, kValueTile>();
@@ -677,7 +516,7 @@ CK_TILE_DEVICE void gdn_output_tiled_two_rows(
                 auto stage_and_store_row = [&](const auto& q_gated,
                                                const auto& score_areg,
                                                ck_tile::index_t row_begin) {
-                    compute_and_stage(q_gated, score_areg, 0);
+                    compute_and_stage(q_gated, score_areg, 0, row_begin);
                     ck_tile::block_sync_lds();
 
                     constexpr auto o_copy_distribution =
@@ -738,8 +577,6 @@ CK_TILE_DEVICE void gdn_output_tiled_two_rows(
                 if(valid_tokens > kRowTile)
                     stage_and_store_row(q_gated1, score_areg1, kRowTile);
             }
-            if constexpr(kUseHLds)
-                prefetched_h_copy = next_h_copy;
         }
     }
 }

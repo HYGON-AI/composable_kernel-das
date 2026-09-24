@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 // SPDX-License-Identifier: MIT
 #pragma once
+#include "ck_tile/ops/gdn/gdn_numeric.hpp"
 #include <ck_tile/core.hpp>
 #include "ck_tile/ops/gdn/pipeline/chunk_delta_h_scan_policy.hpp"
 
@@ -151,10 +152,10 @@ struct ChunkDeltaHScanPrefixPipeline {
             #pragma unroll
             for (index_t ii = 0; ii < kSPT; ++ii) {
                 const index_t kd = kd_base + ii * kd_stride;
-                smem.state_t_lds[vv * kHD_padded + kd] = type_convert<DataType>(s[ii]);
+                smem.state_t_lds[vv * kHD_padded + kd] = gdn_type_convert<DataType>(s[ii]);
                 if (v_begin + vv < kVD) {
                     const int64_t off = (gc_vh_khd + kd) * kVD + v_begin + vv;
-                    args.h_start[off] = type_convert<DataType>(s[ii]);
+                    args.h_start[off] = gdn_type_convert<DataType>(s[ii]);
                 }
             }
 
@@ -243,7 +244,7 @@ struct ChunkDeltaHScanPrefixPipeline {
                             proj_out.get_tile_distribution(), tile_idx);
                         const index_t tok = x_idx.at(ck_tile::number<0>{});
                         const index_t vv_idx = x_idx.at(ck_tile::number<1>{});
-                        DataType residual_t = type_convert<DataType>(0.0f);
+                        DataType residual_t = gdn_type_convert<DataType>(0.0f);
                         if (tok < vt && v_begin + vv_idx < kVD) {
                             const int64_t u_off =
                                 (base_vh + static_cast<int64_t>(tok) * args.num_value_heads)
@@ -252,10 +253,10 @@ struct ChunkDeltaHScanPrefixPipeline {
                             const float u_value = type_convert<float>(smem.u_lds[u_lin]);
                             const float res = u_value - proj_out[tile_idx];
                             if (args.save_new_value) {
-                                args.v_new[u_off] = type_convert<DataType>(res);
+                                args.v_new[u_off] = gdn_type_convert<DataType>(res);
                             }
                             const float gate = args.use_g ? smem.g_lds[tok] : 1.0f;
-                            residual_t = type_convert<DataType>(res * gate);
+                            residual_t = gdn_type_convert<DataType>(res * gate);
                         }
                         if constexpr (kVT == 64) {
                             residual_values[residual_index++] = residual_t;
@@ -294,6 +295,12 @@ struct ChunkDeltaHScanPrefixPipeline {
             clear_tile(proj_acc);
             proj_gemm(proj_acc, w_mmac_window, state_t_mmac_window);
             const auto proj_out = proj_gemm.MakeOuputLayout(proj_acc);
+            if constexpr(kVT != 64)
+            {
+                // state_t_lds aliases residual_t_lds. Every wave must finish
+                // reading the projection operands before residual stores.
+                __syncthreads();
+            }
             write_projection(proj_out);
             __syncthreads();
 
@@ -317,7 +324,7 @@ struct ChunkDeltaHScanPrefixPipeline {
                         const index_t tok = x_idx.at(ck_tile::number<0>{});
                         const index_t kd = x_idx.at(ck_tile::number<1>{});
                         smem.k_t_lds[kd * kBT_padded + tok] =
-                            tok < vt ? k_tile[tile_idx] : type_convert<DataType>(0.0f);
+                            tok < vt ? k_tile[tile_idx] : gdn_type_convert<DataType>(0.0f);
                     });
                 });
             };
@@ -372,6 +379,12 @@ struct ChunkDeltaHScanPrefixPipeline {
             for (index_t ii = 0; ii < kSPT; ++ii) {
                 const index_t kd = kd_base + ii * kd_stride;
                 s[ii] += smem.update_lds[kd * kVT_padded + vv];
+            }
+            if constexpr(kVT == 64)
+            {
+                // The compact layout reuses update_lds as next-chunk w_lds.
+                // Do not overwrite it while another wave reads its update.
+                __syncthreads();
             }
         }
 
