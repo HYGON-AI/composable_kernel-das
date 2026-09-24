@@ -73,6 +73,40 @@ __device__ double2_t atomic_add<double2_t>(double2_t* p_dst, const double2_t& x)
     return vy.template AsType<double2_t>()[I0];
 }
 
+// Update two adjacent FP16 elements with a 32-bit CAS. Each pair must be
+// four-byte aligned; wider vectors retain per-pair atomicity.
+template <>
+__device__ half2_t atomic_add<half2_t>(half2_t* p_dst, const half2_t& x)
+{
+    auto* address = c_style_pointer_cast<uint32_t*>(p_dst);
+    uint32_t observed = atomicCAS(address, 0u, 0u);
+    while(true)
+    {
+        const uint32_t expected = observed;
+        const half2_t old = bit_cast<half2_t>(expected);
+        half2_t next;
+        next[0] = type_convert<half_t>(type_convert<float>(old[0]) + type_convert<float>(x[0]));
+        next[1] = type_convert<half_t>(type_convert<float>(old[1]) + type_convert<float>(x[1]));
+        observed = atomicCAS(address, expected, bit_cast<uint32_t>(next));
+        if(observed == expected)
+            return old;
+    }
+}
+
+template <>
+__device__ half4_t atomic_add<half4_t>(half4_t* p_dst, const half4_t& x)
+{
+    const vector_type<half_t, 4> vx{x};
+    vector_type<half_t, 4> previous;
+    previous.AsType<half2_t>()(Number<0>{}) =
+        atomic_add<half2_t>(c_style_pointer_cast<half2_t*>(p_dst),
+                           vx.AsType<half2_t>()[Number<0>{}]);
+    previous.AsType<half2_t>()(Number<1>{}) =
+        atomic_add<half2_t>(c_style_pointer_cast<half2_t*>(p_dst) + 1,
+                           vx.AsType<half2_t>()[Number<1>{}]);
+    return previous.AsType<half4_t>()[Number<0>{}];
+}
+
 inline __host__ __device__ bhalf_t add_bf16_t(const bhalf_t& a, const bhalf_t& b)
 {
     return type_convert<bhalf_t>(type_convert<float>(a) + type_convert<float>(b));

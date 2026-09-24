@@ -243,10 +243,14 @@ struct GridwiseGemm_xdl_cshuffle_base
             constexpr auto kfold = (AK1Number * M0 * sizeof(ADataType) > 128)
                                        ? 1
                                        : 128 / (AK1Number * M0 * sizeof(ADataType));
-            constexpr auto KThreadReadPerm =
-                (kfold * K0PerThreadWrite / K0PerThreadRead) > 1
-                    ? KThreadRead / (kfold * K0PerThreadWrite / K0PerThreadRead)
-                    : KThreadRead;
+            // A zero permutation ratio needs no fold. Discard the division at
+            // compile time, including for the alternate wave-size descriptor.
+            constexpr auto KThreadReadPerm = [=] {
+                if constexpr((kfold * K0PerThreadWrite / K0PerThreadRead) > 1)
+                    return KThreadRead / (kfold * K0PerThreadWrite / K0PerThreadRead);
+                else
+                    return KThreadRead;
+            }();
 
             // 1<=mpair<=n0
             constexpr auto mpair = (AK1Number * MPerXdl * sizeof(ADataType) > 128)
@@ -448,10 +452,14 @@ struct GridwiseGemm_xdl_cshuffle_base
             constexpr auto kfold = (AK1Number * M0 * sizeof(ADataType) > LdsBankSize)
                                        ? 1
                                        : LdsBankSize / (AK1Number * M0 * sizeof(ADataType));
-            constexpr auto KThreadReadPerm =
-                (kfold * K0PerThreadWrite / K0PerThreadRead) > 1
-                    ? KThreadRead / (kfold * K0PerThreadWrite / K0PerThreadRead)
-                    : KThreadRead;
+            // A zero permutation ratio needs no fold. Discard the division at
+            // compile time, including for the alternate wave-size descriptor.
+            constexpr auto KThreadReadPerm = [=] {
+                if constexpr((kfold * K0PerThreadWrite / K0PerThreadRead) > 1)
+                    return KThreadRead / (kfold * K0PerThreadWrite / K0PerThreadRead);
+                else
+                    return KThreadRead;
+            }();
 
             // 1<=mpair<=n0
             constexpr auto mpair =
@@ -606,10 +614,14 @@ struct GridwiseGemm_xdl_cshuffle_base
             constexpr auto kfold = (BK1Number * N0 * sizeof(BDataType) > 128)
                                        ? 1
                                        : 128 / (BK1Number * N0 * sizeof(BDataType));
-            constexpr auto KThreadReadPerm =
-                (kfold * K0PerThreadWrite / K0PerThreadRead) > 1
-                    ? KThreadRead / (kfold * K0PerThreadWrite / K0PerThreadRead)
-                    : KThreadRead;
+            // A zero permutation ratio needs no fold. Discard the division at
+            // compile time, including for the alternate wave-size descriptor.
+            constexpr auto KThreadReadPerm = [=] {
+                if constexpr((kfold * K0PerThreadWrite / K0PerThreadRead) > 1)
+                    return KThreadRead / (kfold * K0PerThreadWrite / K0PerThreadRead);
+                else
+                    return KThreadRead;
+            }();
 
             // 1<=npair<=n0
             constexpr auto npair = (BK1Number * NPerXdl * sizeof(BDataType) > 128)
@@ -813,10 +825,14 @@ struct GridwiseGemm_xdl_cshuffle_base
                                        ? 1
                                        : LdsBankSize / (BK1Number * N0 * sizeof(BDataType));
 
-            constexpr auto KThreadReadPerm =
-                (kfold * K0PerThreadWrite / K0PerThreadRead) > 1
-                    ? KThreadRead / (kfold * K0PerThreadWrite / K0PerThreadRead)
-                    : KThreadRead;
+            // A zero permutation ratio needs no fold. Discard the division at
+            // compile time, including for the alternate wave-size descriptor.
+            constexpr auto KThreadReadPerm = [=] {
+                if constexpr((kfold * K0PerThreadWrite / K0PerThreadRead) > 1)
+                    return KThreadRead / (kfold * K0PerThreadWrite / K0PerThreadRead);
+                else
+                    return KThreadRead;
+            }();
 
             // 1<=npair<=n0
             constexpr auto npair =

@@ -1,0 +1,7 @@
+// Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+// SPDX-License-Identifier: MIT
+
+#include "unified_attention_2d_d256_impl.hpp"
+
+template int run_unified_attention_2d_d256<ck_tile::fp16_t>(
+    const ck_tile::ArgParser& parser);

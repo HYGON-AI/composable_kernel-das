@@ -53,13 +53,17 @@ set_directory_properties(PROPERTIES CMAKE_CONFIGURE_DEPENDS "${CODE_GEN_SCRIPTS}
 
 list(JOIN INST_TARGETS , FMHA_TARGETS_ARG)
 
+set(FMHA_FWD_RECEIPT "3" CACHE STRING "FMHA forward codegen integration receipt")
+set(FMHA_FWD_OPT_DIM "64,128" CACHE STRING "Comma-separated FMHA forward head dimensions")
+set(FMHA_FWD_KERNEL_FILTER "" CACHE STRING "Per-API FMHA forward codegen filters")
+
 string(REPLACE ";" "," FMHA_FWD_APIS "${FMHA_FWD_ENABLE_APIS}")
 set(FMHA_FWD_CODE_GEN_COMMON_ARGS
   ${CMAKE_CURRENT_LIST_DIR}/generate.py
   --targets ${FMHA_TARGETS_ARG}
   --api ${FMHA_FWD_APIS}
-  --receipt 3
-  --optdim 64,128
+  --receipt ${FMHA_FWD_RECEIPT}
+  --optdim ${FMHA_FWD_OPT_DIM}
 )
 set(FMHA_BWD_CODE_GEN_COMMON_ARGS
   ${CMAKE_CURRENT_LIST_DIR}/generate.py
@@ -74,7 +78,9 @@ set(FMHA_BWD_CODE_GEN_COMMON_ARGS
 # TODO: Consider to use a special receipt for testing only, or even two receipts: a small subset of
 # instances for quick CI runs and a larger subset for scheduled runs (the tests skip tests when
 # there is no corresponding instance for parameters).
-if(BUILD_TESTING)
+if(NOT FMHA_FWD_KERNEL_FILTER STREQUAL "")
+  list(APPEND FMHA_FWD_CODE_GEN_COMMON_ARGS --filter ${FMHA_FWD_KERNEL_FILTER})
+elseif(BUILD_TESTING)
   # Filters are in the order of FMHA_FWD_KNOWN_APIS: fwd,fwd_splitkv_combine@fwd_splitkv,fwd_appendkv,pagedkv_prefill
   list(APPEND FMHA_FWD_CODE_GEN_COMMON_ARGS --filter *_nlogits*_nskip*_nsink*,*@*_nlogits*_nbias*_nsink*,*,*_nlogits*_nskip*_pagedkv*)
 endif()
@@ -159,6 +165,14 @@ else()
   list(APPEND FMHA_FWD_PRIVATE_COMPILE_OPTIONS -DCK_TILE_FMHA_FWD_FAST_EXP2=0)
 endif()
 list(APPEND FMHA_BWD_PRIVATE_COMPILE_OPTIONS -fgpu-flush-denormals-to-zero)
+
+# Extended forward kernels are included only when their APIs are requested.
+if("fwd_splitkv" IN_LIST FMHA_FWD_ENABLE_APIS OR
+   "fwd_appendkv" IN_LIST FMHA_FWD_ENABLE_APIS OR
+   "pagedkv_prefill" IN_LIST FMHA_FWD_ENABLE_APIS)
+  list(APPEND FMHA_FWD_PRIVATE_COMPILE_OPTIONS -DCK_TILE_FMHA_ENABLE_EXTENDED_FWD_HEADERS=1)
+  list(APPEND FMHA_FWD_INTERFACE_COMPILE_OPTIONS -DCK_TILE_FMHA_ENABLE_EXTENDED_FWD_HEADERS=1)
+endif()
 
 # conditionally enable call to the fwd_splitkv API in fmha_fwd example and tests
 if("fwd_splitkv" IN_LIST FMHA_FWD_ENABLE_APIS)

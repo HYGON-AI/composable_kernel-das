@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2018-2024, Advanced Micro Devices, Inc. All rights reserved.
 // Modified by Hygon Information Technology Co., Ltd.
+// Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 
 #pragma once
 
@@ -13,9 +14,8 @@
 #include "ck_tile/ops/fmha/block/block_position_encoding.hpp"
 #include "ck_tile/ops/fmha/block/block_rotary_embedding.hpp"
 #include "ck_tile/ops/fmha/block/page_block_navigator.hpp"
-// [HCU移植] FMHA 移植中 BWD 与扩展 FWD（appendkv/splitkv 等）头文件尚未在 HCU 上打通，
-// 用 CK_TILE_FMHA_ENABLE_BWD_HEADERS / CK_TILE_FMHA_ENABLE_EXTENDED_FWD_HEADERS 做编译门禁，
-// 仅在对应 example/实例目标里按需打开（见 01_fmha/CMakeLists.txt）。
+// Keep optional backward and extended forward headers behind their feature switches.
+// The corresponding example/instance targets enable them in 01_fmha/CMakeLists.txt.
 #if defined(CK_TILE_FMHA_ENABLE_BWD_HEADERS)
 #include "ck_tile/ops/fmha/kernel/fmha_bwd_kernel.hpp"
 #endif
@@ -28,6 +28,7 @@
 #include "ck_tile/ops/fmha/kernel/fmha_fwd_splitkv_combine_kernel.hpp"
 #include "ck_tile/ops/fmha/kernel/fmha_fwd_splitkv_combine_tile_partitioner.hpp"
 #include "ck_tile/ops/fmha/kernel/fmha_fwd_splitkv_kernel.hpp"
+#include "ck_tile/ops/fmha/kernel/fmha_fwd_pagedkv_kernel.hpp"
 #include "ck_tile/ops/fmha/kernel/fmha_fwd_splitkv_tile_partitioner.hpp"
 #endif
 #include "ck_tile/ops/fmha/kernel/fmha_fwd_tile_partitioner.hpp"
@@ -46,6 +47,7 @@
 #include "ck_tile/ops/fmha/pipeline/block_fmha_fwd_splitkv_combine_pipeline.hpp"
 #include "ck_tile/ops/fmha/pipeline/block_fmha_fwd_splitkv_combine_pipeline_default_policy.hpp"
 #include "ck_tile/ops/fmha/pipeline/block_fmha_fwd_splitkv_pipeline_qr_ks_vs.hpp"
+#include "ck_tile/ops/fmha/pipeline/block_fmha_fwd_pagedkv_pipeline_qr_ks_vs.hpp"
 #include "ck_tile/ops/fmha/pipeline/block_fmha_fwd_splitkv_pipeline_qr_ks_vs_default_policy.hpp"
 #endif
 #include "ck_tile/ops/fmha/pipeline/block_fmha_pipeline_enum.hpp"

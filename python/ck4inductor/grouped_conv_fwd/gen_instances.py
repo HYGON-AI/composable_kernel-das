@@ -33,7 +33,7 @@ _CONV_SPECS = (
 
 def _ck_library_dir():
     conv_instances_path = (
-        Path(library_path()) / "src" / "tensor_operation_instance" / "gpu" / "grouped_conv2d_fwd"
+        Path(library_path()) / "src" / "tensor_operation_instance_hcu" / "gpu" / "grouped_conv2d_fwd"
     )
     if not conv_instances_path.exists():
         log.error("CK library path %s does not exist", conv_instances_path)
@@ -78,7 +78,7 @@ def _bool_token(token: str):
 def _op_from_instance(instance: TemplateInstance) -> CKGroupedConvFwdOp:
     args = list(instance.args)
     if len(args) == _EXPECTED_ARGS_WITH_DEFAULT_LOOP:
-        args.append("LoopScheduler::Default")
+        args.append("ck::LoopScheduler::Default")
     if len(args) != _EXPECTED_ARGS_WITH_EXPLICIT_LOOP:
         raise ValueError(f"{instance.path}: expected 45 or 46 args for {_TEMPLATE_NAME}, got {len(args)}")
 

@@ -56,7 +56,7 @@ class CKGroupedConvFwdOp:
     c_shuffle_n_xdl_per_wave_per_shuffle: int
     cde_block_transfer_cluster_lengths_m_block_m_per_block_n_block_n_per_block: Tuple[int, ...]
     cde_block_transfer_scalar_per_vector_n_per_block: int
-    loop_scheduler: str = "LoopScheduler::Default"
+    loop_scheduler: str = "ck::LoopScheduler::Default"
 
     def name(self):
         return f"ck_device_grouped_conv_fwd_multiple_d_xdl_cshuffle_{self.key_name()}"

@@ -1,5 +1,8 @@
 # Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# Modified by Hygon Information Technology Co., Ltd.
+
 # generate kernel instances to speed up compilation
 import copy
 import fnmatch
@@ -71,7 +74,7 @@ float fmha_fwd_appendkv_<trait_{F_idx}, {F_arch.tag}>(const ck_tile::stream_conf
     auto [kargs, grids] = fmha_fwd_appendkv_create_kargs_and_grids<k_>(a);
     const dim3 blocks                      = k_::BlockSize();
     constexpr ck_tile::index_t kBlockPerCu = k_::kBlockPerCu;
-    return ck_tile::launch_kernel(s, ck_tile::make_kernel<kBlockPerCu, {F_arch.tag}>(k_{{}}, grids, blocks, 0, kargs));
+    return ck_tile::launch_kernel(s, ck_tile::make_kernel<CK_TILE_MAX_THREAD_PER_BLOCK, kBlockPerCu>(k_{{}}, grids, blocks, 0, kargs));
 }}
 
 #endif // !defined(__HIP_DEVICE_COMPILE__) || ({F_arch.preprocessor_check})
@@ -388,6 +391,20 @@ class KernelComponentFactoryGfx9(KernelComponentFactoryBase):
     arch = ArchTrait("gfx9")
 
 
+class KernelComponentFactoryGfx936(KernelComponentFactoryGfx9):
+    arch = ArchTrait("gfx936", tag="void")
+
+    @staticmethod
+    def get_hdim_tile_size_dict(dtype: str) -> Optional[dict]:
+        if dtype in ("fp16", "bf16"):
+            return KernelComponentFactoryBase.get_hdim_tile_size_dict(dtype)
+        return None
+
+
+class KernelComponentFactoryGfx938(KernelComponentFactoryGfx936):
+    arch = ArchTrait("gfx938", tag="void")
+
+
 class KernelComponentFactoryGfx11(KernelComponentFactoryBase):
     arch = ArchTrait("gfx11")
 
@@ -415,6 +432,10 @@ class KernelComponentFactoryGfx125(KernelComponentFactoryBase):
 def get_factory(target: str):
     # Place more specific architectures first
 
+    if target.startswith("gfx936"):
+        return KernelComponentFactoryGfx936
+    if target.startswith("gfx938"):
+        return KernelComponentFactoryGfx938
     if target.startswith("gfx9"):
         return KernelComponentFactoryGfx9
     if target.startswith("gfx11"):

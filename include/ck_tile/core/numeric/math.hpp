@@ -1400,7 +1400,8 @@ CK_TILE_DEVICE float tanh_fast<float>(float x)
     // float e = a * __builtin_amdgcn_rcpf(b);
     // return e;
 
-    float a = 2.0f * log2e_v<float> * x;
+    // __ocml_exp_f32 uses base e; its argument is 2*x, not 2*log2(e)*x.
+    float a = 2.0f * x;
     a       = __ocml_exp_f32(a);
     a       = __builtin_amdgcn_rcpf(a + 1.0f);
     a       = 2 * a;

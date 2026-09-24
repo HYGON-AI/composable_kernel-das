@@ -138,7 +138,7 @@ __global__ void
             const ComputePtrOffsetOfBatch compute_ptr_offset_of_batch)
 {
 #if(!defined(__HIP_DEVICE_COMPILE__) || defined(__gfx908__) || defined(__gfx90a__) || \
-    defined(__gfx940__))
+    defined(__gfx940__) || defined(__gfx936__) || defined(__gfx938__))
     // offset base pointer for each work-group
     const index_t num_blocks_per_batch =
         __builtin_amdgcn_readfirstlane(get_grid_size() / batch_count);
@@ -371,7 +371,9 @@ struct DeviceGroupedConvFwdMultipleD_Xdl_CShuffle
 
     // GridwiseGemm
     using GridwiseGemm = GridwiseGemmMultipleD_xdl_cshuffle<
-        ADataType, // TODO: distinguish A/B datatype
+        ADataType,
+        BDataType,
+        ADataType, // MMAC compute type
         AccDataType,
         CShuffleDataType,
         DsDataType,
@@ -678,8 +680,16 @@ struct DeviceGroupedConvFwdMultipleD_Xdl_CShuffle
     {
         namespace ctc = tensor_layout::convolution;
 
-        // check device
-        if(get_device_name() == "gfx908")
+        // The HCU grid uses FP32 accumulation and native FP16/BF16/FP32 MMAC.
+        if(get_device_name() == "gfx936" || get_device_name() == "gfx938")
+        {
+            if constexpr(!(is_same_v<AccDataType, float> &&
+                           is_same_v<ADataType, BDataType> &&
+                           (is_same_v<ADataType, half_t> || is_same_v<ADataType, bhalf_t> ||
+                            is_same_v<ADataType, float>)))
+                return false;
+        }
+        else if(get_device_name() == "gfx908")
         {
             if constexpr(!(is_same_v<AccDataType, float> || is_same_v<AccDataType, float> ||
                            is_same_v<AccDataType, int32_t>))

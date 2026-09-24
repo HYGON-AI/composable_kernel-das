@@ -56,3 +56,6 @@ _static/
 _templates/
 _toc.yml
 docBin/
+
+# pycache file
+__pycache__
