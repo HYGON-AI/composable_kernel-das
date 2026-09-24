@@ -18,6 +18,7 @@ reject() {
 }
 fwd="$bin/tile_example_sla_fwd"
 bwd="$bin/tile_example_sla_bwd"
+run "$bin/tile_example_sla_sizes"
 for prec in fp16 bf16; do
     common=(-prec="$prec" -b=1 -h=1 -d=128 -v=1 -warmup=1 -repeat=1)
     for s in 64 256 1024; do
@@ -38,6 +39,12 @@ for prec in fp16 bf16; do
     run "$fwd" "${common[@]}" -s=18048 -topk_ratio=0.01
     run "$bwd" "${common[@]}" -s=18048 -topk_ratio=0.01
     for exe in "$fwd" "$bwd"; do
+        # Reject before HostTensor construction or hipMalloc, including b*h
+        # itself overflowing and the first unrepresentable tensor size.
+        for shape in '-b=128 -h=128 -s=2048' '-b=8192 -h=1 -s=2048' '-b=65536 -h=65536 -s=64' '-b=2147483647 -h=2147483647 -s=131072'; do
+            read -r -a flags <<< "$shape"
+            reject "$exe" "${common[@]}" "${flags[@]}"
+        done
         for option in '-s=65' '-d=64' '-b=0' '-topk_ratio=0' '-topk_ratio=1.1' '-kv_stages=17' '-warmup=0'; do
             reject "$exe" "${common[@]}" -s=64 "$option"
         done

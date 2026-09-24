@@ -15,5 +15,5 @@ cmake -S "${repo_root}" -B "${build_dir}" \
   -DBUILD_TEST=OFF
 
 cmake --build "${build_dir}" \
-  --target tile_example_unified_attention_2d tile_example_unified_attention_3d \
+  --target tile_example_unified_attention_2d tile_example_unified_attention_3d tile_example_unified_attention_args \
   -j "${JOBS:-2}"

@@ -32,7 +32,7 @@ static void launch_fused_linear(
     constexpr bool kUseSplitL = Type == ActType::RELU;
     constexpr int kSplitL = LinearPolicy::kKvSplitL;
     const std::size_t k_feat_bytes =
-        static_cast<std::size_t>(BH * L * D) * sizeof(DataType);
+        static_cast<std::size_t>(BH) * L * D * sizeof(DataType);
     const std::size_t matrix_bytes =
         static_cast<std::size_t>(BH) * D * D * sizeof(DataType);
     const std::size_t partial_kv_bytes =
@@ -112,7 +112,7 @@ static void launch_fused_linear(
 template <typename DataType>
 inline std::size_t get_fused_linear_workspace_bytes(int B, int H, int L, int D, ActType type)
 {
-    const int BH = B * H;
+    const std::size_t BH = static_cast<std::size_t>(B) * H;
     using LinearPolicy = SlaLinearFusedPolicy<SlaFusedLinearAttnProblem<DataType>>;
     const auto align_up = [](std::size_t bytes) {
         constexpr auto alignment = ck_tile::example::sla::kWorkspaceAlignment;
@@ -120,7 +120,7 @@ inline std::size_t get_fused_linear_workspace_bytes(int B, int H, int L, int D, 
     };
     const bool kUseSplitL = type == ActType::RELU;
     constexpr int kSplitL = LinearPolicy::kKvSplitL;
-    const std::size_t k_feat_bytes = static_cast<std::size_t>(BH * L * D) * sizeof(DataType);
+    const std::size_t k_feat_bytes = static_cast<std::size_t>(BH) * L * D * sizeof(DataType);
     const std::size_t matrix_bytes = static_cast<std::size_t>(BH) * D * D * sizeof(DataType);
     const std::size_t partial_kv_bytes = static_cast<std::size_t>(BH) * kSplitL * D * D * sizeof(float);
     const std::size_t partial_ksum_bytes = static_cast<std::size_t>(BH) * kSplitL * D * sizeof(float);
@@ -231,6 +231,12 @@ struct SlaFwdInstance
                          "linear_attn in {0,1}, and warmup/repeat>0\n";
             return 1;
         }
+        if(!ck_tile::example::sla::is_sla_shape_indexable(b, h, s, d))
+        {
+            std::cerr << "unsupported SLA shape: b*h*max(s,d)*d must fit in INT_MAX "
+                         "for 32-bit kernel indexing\n";
+            return 1;
+        }
         if(s == ck_tile::example::sla::kTunedSequenceLength && req_kv_stages != 0 &&
            req_kv_stages != ck_tile::example::sla::kTunedFwdKvStageCount)
         {
@@ -264,8 +270,8 @@ struct SlaFwdInstance
         ck_tile::DeviceMem v_buf(v_host);
         ck_tile::DeviceMem weight_buf(weight_host);
         ck_tile::DeviceMem bias_buf(bias_host);
-        ck_tile::DeviceMem out_buf(static_cast<size_t>(b * h * s * d) * sizeof(DataType));
-        ck_tile::DeviceMem lse_buf(static_cast<size_t>(b * h * s) * sizeof(float));
+        ck_tile::DeviceMem out_buf(static_cast<size_t>(b) * h * s * d * sizeof(DataType));
+        ck_tile::DeviceMem lse_buf(static_cast<size_t>(b) * h * s * sizeof(float));
 
         // Allocate sparse_map metadata
         constexpr int block_n = ck_tile::example::sla::kBlockN;
@@ -273,9 +279,9 @@ struct SlaFwdInstance
         const int kv_blocks = s / block_n;
         const int max_nnz = std::max(1, static_cast<int>(topk_ratio * kv_blocks));
 
-        ck_tile::DeviceMem sparse_map_buf(static_cast<size_t>(b * h * q_blocks * kv_blocks) * sizeof(int8_t));
-        ck_tile::DeviceMem lut_buf(static_cast<size_t>(b * h * q_blocks * max_nnz) * sizeof(int64_t));
-        ck_tile::DeviceMem lut_size_buf(static_cast<size_t>(b * h * q_blocks) * sizeof(int32_t));
+        ck_tile::DeviceMem sparse_map_buf(static_cast<size_t>(b) * h * q_blocks * kv_blocks * sizeof(int8_t));
+        ck_tile::DeviceMem lut_buf(static_cast<size_t>(b) * h * q_blocks * max_nnz * sizeof(int64_t));
+        ck_tile::DeviceMem lut_size_buf(static_cast<size_t>(b) * h * q_blocks * sizeof(int32_t));
 
         sparse_map_buf.SetZero();
         lut_buf.SetZero();
@@ -296,10 +302,10 @@ struct SlaFwdInstance
         HIP_CHECK_ERROR(hipDeviceSynchronize());
 
         // 2. Setup multi-stage KV structures if kv_stage_count > 1
-        ck_tile::DeviceMem partitioned_lut_buf(kv_stage_count > 1 ? static_cast<size_t>(b * h * q_blocks * max_nnz) * sizeof(int64_t) : 1);
-        ck_tile::DeviceMem stage_offsets_buf(kv_stage_count > 1 ? static_cast<size_t>(b * h * q_blocks * (kv_stage_count + 1)) * sizeof(int32_t) : 1);
-        ck_tile::DeviceMem partial_out_buf(kv_stage_count > 1 ? static_cast<size_t>(kv_stage_count * b * h * s * d) * sizeof(DataType) : 1);
-        ck_tile::DeviceMem partial_lse_buf(kv_stage_count > 1 ? static_cast<size_t>(kv_stage_count * b * h * s) * sizeof(float) : 1);
+        ck_tile::DeviceMem partitioned_lut_buf(kv_stage_count > 1 ? static_cast<size_t>(b) * h * q_blocks * max_nnz * sizeof(int64_t) : 1);
+        ck_tile::DeviceMem stage_offsets_buf(kv_stage_count > 1 ? static_cast<size_t>(b) * h * q_blocks * (kv_stage_count + 1) * sizeof(int32_t) : 1);
+        ck_tile::DeviceMem partial_out_buf(kv_stage_count > 1 ? static_cast<size_t>(kv_stage_count) * b * h * s * d * sizeof(DataType) : 1);
+        ck_tile::DeviceMem partial_lse_buf(kv_stage_count > 1 ? static_cast<size_t>(kv_stage_count) * b * h * s * sizeof(float) : 1);
 
         const int64_t* kernel_lut = static_cast<const int64_t*>(lut_buf.GetDeviceBuffer());
         const int32_t* kernel_stage_offsets = nullptr;
@@ -314,8 +320,8 @@ struct SlaFwdInstance
             kernel_stage_offsets = static_cast<const int32_t*>(stage_offsets_buf.GetDeviceBuffer());
             kernel_output = reinterpret_cast<uint16_t*>(partial_out_buf.GetDeviceBuffer());
             kernel_lse = static_cast<float*>(partial_lse_buf.GetDeviceBuffer());
-            output_stage_stride = static_cast<int64_t>(b * h * s * d);
-            lse_stage_stride = static_cast<int64_t>(b * h * s);
+            output_stage_stride = static_cast<int64_t>(b) * h * s * d;
+            lse_stage_stride = static_cast<int64_t>(b) * h * s;
         }
 
         using Problem = SlaAttnFwdAttentionProblemM<BlockM, DataType>;
@@ -400,7 +406,7 @@ struct SlaFwdInstance
         // branch, projection, and final o_s + o_l merge. Keep this outside the
         // sparse-attention timing, matching sparse-map generation above.
         ck_tile::DeviceMem final_out_buf(
-            run_linear ? static_cast<size_t>(b * h * s * d) * sizeof(DataType) : 1);
+            run_linear ? static_cast<size_t>(b) * h * s * d * sizeof(DataType) : 1);
         const auto linear_workspace_bytes = run_linear
             ? ck_tile::example::sla::get_fused_linear_workspace_bytes<DataType>(
                   b, h, s, d, sla::ActType::SOFTMAX)
@@ -427,8 +433,8 @@ struct SlaFwdInstance
 
         if(verify)
         {
-            ck_tile::DeviceMem ref_out_buf(static_cast<size_t>(b * h * s * d) * sizeof(DataType));
-            ck_tile::DeviceMem ref_lse_buf(static_cast<size_t>(b * h * s) * sizeof(float));
+            ck_tile::DeviceMem ref_out_buf(static_cast<size_t>(b) * h * s * d * sizeof(DataType));
+            ck_tile::DeviceMem ref_lse_buf(static_cast<size_t>(b) * h * s * sizeof(float));
 
             constexpr int num_threads = sla_reference::kReferenceBlockSize;
             hipLaunchKernelGGL(
@@ -449,15 +455,15 @@ struct SlaFwdInstance
             if(run_linear)
             {
                 ck_tile::DeviceMem ref_k_feature_buf(
-                    static_cast<size_t>(b * h * s * d) * sizeof(DataType));
+                    static_cast<size_t>(b) * h * s * d * sizeof(DataType));
                 ck_tile::DeviceMem ref_ksum_buf(
-                    static_cast<size_t>(b * h * d) * sizeof(float));
+                    static_cast<size_t>(b) * h * d * sizeof(float));
                 ck_tile::DeviceMem ref_kv_buf(
-                    static_cast<size_t>(b * h * d * d) * sizeof(DataType));
+                    static_cast<size_t>(b) * h * d * d * sizeof(DataType));
                 ck_tile::DeviceMem ref_projected_buf(
-                    static_cast<size_t>(b * h * d * d) * sizeof(DataType));
+                    static_cast<size_t>(b) * h * d * d * sizeof(DataType));
                 ck_tile::DeviceMem ref_final_out_buf(
-                    static_cast<size_t>(b * h * s * d) * sizeof(DataType));
+                    static_cast<size_t>(b) * h * s * d * sizeof(DataType));
 
                 hipLaunchKernelGGL(
                     (sla_reference::linear_k_feature_ref<DataType>),

@@ -7,12 +7,12 @@
 #include "ck_tile/host/host_tensor.hpp"
 #include "ck_tile/host/fill.hpp"
 #include "ck_tile/core/numeric/math.hpp"
+#include "unified_attention_parse.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <iostream>
-#include <sstream>
 #include <string>
 #include <vector>
 
@@ -43,20 +43,6 @@ inline constexpr int unified_attention_round_up(int value, int multiple)
 inline float kQkScaleLog2e(int d)
 {
     return ck_tile::log2e_v<float> / std::sqrt(static_cast<float>(d));
-}
-
-inline std::vector<int> parse_query_lens_helper(const std::string& text)
-{
-    std::vector<int> lengths;
-    if(text.empty()) return lengths;
-    std::stringstream stream(text);
-    std::string token;
-    while(std::getline(stream, token, ','))
-    {
-        if(!token.empty())
-            lengths.push_back(std::stoi(token));
-    }
-    return lengths;
 }
 
 struct UnifiedAttentionProblem
@@ -158,13 +144,18 @@ struct UnifiedAttentionProblem
                     p.query_lens = {parser.get_int("nq")};
             }
             p.batch = static_cast<int>(p.query_lens.size());
-            const auto parsed_kv_lens = parse_query_lens_helper(parser.get_str("kv_lens"));
+            const auto parsed_kv_lens =
+                parse_query_lens_helper(parser.get_str("kv_lens"), "kv_lens");
+            if(!parsed_kv_lens.empty() && parsed_kv_lens.size() != p.query_lens.size())
+                throw std::invalid_argument("kv_lens must contain one length per query sequence");
             const int nkv = parser.get_int("nkv");
             p.seqlens.assign(p.batch, nkv);
             for(int i = 0; i < p.batch; ++i)
             {
                 if(!parsed_kv_lens.empty())
                     p.seqlens[i] = parsed_kv_lens[i];
+                if(p.query_lens[i] <= 0 || p.seqlens[i] < p.query_lens[i])
+                    throw std::invalid_argument("require 0 < query length <= KV length for each sequence");
             }
         }
 

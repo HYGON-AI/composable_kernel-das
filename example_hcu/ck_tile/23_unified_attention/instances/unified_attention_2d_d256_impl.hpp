@@ -13,24 +13,8 @@
 #include <cmath>
 #include <cstdint>
 #include <iostream>
-#include <sstream>
 #include <type_traits>
 #include <vector>
-
-inline std::vector<int> parse_d256_query_lens(const std::string& text)
-{
-    std::vector<int> lengths;
-    if(text.empty()) return lengths;
-    std::stringstream stream(text);
-    std::string item;
-    while(std::getline(stream, item, ','))
-    {
-        const int value = std::stoi(item);
-        if(value <= 0) return {};
-        lengths.push_back(value);
-    }
-    return lengths;
-}
 
 inline int select_d256_kv_stages(int nb, int nqb, int h_q, int n_q, int max_stages)
 {
@@ -88,7 +72,8 @@ int run_unified_attention_2d_d256_batch(const ck_tile::ArgParser& parser,
     int max_nq = 0;
     int max_nkv = 0;
     std::vector<int32_t> cu_q(batch + 1, 0);
-    auto parsed_kv_lens = parse_d256_query_lens(parser.get_str("kv_lens"));
+    const auto parsed_kv_lens =
+        ck_tile::parse_query_lens_helper(parser.get_str("kv_lens"), "kv_lens");
     if(!parsed_kv_lens.empty() &&
        static_cast<int>(parsed_kv_lens.size()) != batch)
     {
@@ -667,7 +652,7 @@ int run_unified_attention_2d_d256_batch(const ck_tile::ArgParser& parser,
 template <typename DataType>
 int run_unified_attention_2d_d256(const ck_tile::ArgParser& parser)
 {
-    auto batch_query_lens = parse_d256_query_lens(parser.get_str("query_lens"));
+    auto batch_query_lens = ck_tile::parse_query_lens_helper(parser.get_str("query_lens"));
     if(batch_query_lens.empty()) batch_query_lens.push_back(parser.get_int("nq"));
     return run_unified_attention_2d_d256_batch<DataType>(parser, batch_query_lens);
 }

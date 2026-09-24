@@ -61,6 +61,7 @@ bash build.sh
 ```text
 build/bin/tile_example_unified_attention_2d
 build/bin/tile_example_unified_attention_3d
+build/bin/tile_example_unified_attention_args
 ```
 
 
@@ -131,7 +132,7 @@ bash \
 | `-d` | 192 | 192 | head dim，仅支持 192 或 256 |
 | `-prec` | fp16 | fp16 | `fp16` 或 `bf16` |
 | `-query_lens` | 空 | - | 逗号分隔的各序列 Q 长度；非空启用 multibatch |
-| `-kv_lens` | 空 | - | 各序列 KV 长度；为空时均使用 `nkv` |
+| `-kv_lens` | 空 | - | 各序列 KV 长度；为空时均使用 `nkv`；非空时条目数须等于 Q 序列数 |
 | `-block_size` | 64 | 16 | paged KV cache 的物理页大小；3D 仅支持 16/32 |
 | `-kv_cache_blocks` | 0 | 0 | 物理 KV cache 页数；0 表示使用所需最小值 |
 | `-block_table_width` | 0 | 0 | 每序列 block table 宽度；0 表示自动计算 |
@@ -149,6 +150,9 @@ bash \
 | `-prefix_begin/end` | 0/-1 | 0/-1 | PrefixLM 闭区间；`-1` 表示末尾 |
 | `-warmup/repeat` | 10/100 | 10/100 | 预热和计时次数 |
 | `-v` | 1 | 1 | 1：执行独立 GPU reference 全量验证；0：跳过 |
+
+`query_lens` 和 `kv_lens` 的非空值必须是逗号分隔的正整数列表。零、负数、
+空条目、非整数字符和超过 `int` 范围的值会报错并返回退出码 2，不会回退到默认长度。
 
 ## Migration provenance and validation
 

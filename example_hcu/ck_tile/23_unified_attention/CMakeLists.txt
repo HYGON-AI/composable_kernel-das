@@ -8,8 +8,10 @@ add_executable(tile_example_unified_attention_2d
     instances/unified_attention_2d_d256_fp16.cpp
     instances/unified_attention_2d_d256_bf16.cpp)
 add_executable(tile_example_unified_attention_3d unified_attention_3d.cpp)
+add_example_executable(tile_example_unified_attention_args test_unified_attention_args.cpp)
 
-foreach(target tile_example_unified_attention_2d tile_example_unified_attention_3d)
+foreach(target tile_example_unified_attention_2d tile_example_unified_attention_3d
+               tile_example_unified_attention_args)
     # Masked rows and empty softmax segments use infinity sentinels. Preserve
     # their comparisons and isfinite checks in both kernels and the reference.
     target_compile_options(${target} PRIVATE -O3 -ffast-math -fno-finite-math-only

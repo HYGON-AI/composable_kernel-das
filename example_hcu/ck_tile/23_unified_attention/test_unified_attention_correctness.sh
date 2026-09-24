@@ -17,6 +17,7 @@ reject() {
 }
 pre="$bin/tile_example_unified_attention_2d"
 dec="$bin/tile_example_unified_attention_3d"
+run "$bin/tile_example_unified_attention_args"
 for prec in fp16 bf16; do
  for d in 192 256; do
     common=(-prec="$prec" -d="$d" -h=8 -hkv=2 -v=1 -warmup=1 -repeat=1)
@@ -66,6 +67,12 @@ for prec in fp16 bf16; do
         reject "$pre" "${common[@]}" -nkv=256 "${flags[@]}"
     done
     reject "$dec" "${common[@]}" -block_size=64
+    for name in query_lens kv_lens; do
+        for value in '17,0' '17,-1' '17,abc' '17,2147483648' '17,65x' ',17' '17,' '17,,65' ','; do
+            reject "$pre" "${common[@]}" -nkv=256 "-$name=$value"
+        done
+    done
+    reject "$pre" "${common[@]}" -query_lens=17,65 -kv_lens=128,128,128
     reject "$dec" "${common[@]}" -segments=999
  done
 done
