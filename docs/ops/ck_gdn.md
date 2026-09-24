@@ -18,11 +18,11 @@ GDN 是带门控的递归注意力。对于单个 value head，以 KV state `S[K
 
 ## 2. 构建与命令行
 
-在 CK 仓库根目录执行，使用已安装 DTK 的 `hipcc`；目标可改成 `gfx938`：
+在 CK 仓库根目录执行，使用已安装 DTK 的 `aicc`（本文两种架构性能实测所用的编译器）；目标可改成 `gfx938`：
 
 ```bash
 cmake -S . -B build-gdn \
-  -DCMAKE_CXX_COMPILER="$(command -v hipcc)" \
+  -DCMAKE_CXX_COMPILER="$(command -v aicc)" \
   -DGPU_TARGETS=gfx936 \
   -DBUILD_DEV=ON -DBUILD_EXAMPLE=ON -DBUILD_TEST=OFF
 cmake --build build-gdn \
@@ -155,7 +155,7 @@ gdn_decode_example::launch_bf16_raw_beta(a, raw_beta_fp32_dev, stream);
 |显存|约64 GiB|约144 GiB|
 |L2|8 MiB|8 MiB|
 |PyTorch / HIP|2.10.0 / 6.3.26113|2.10.0 / 6.3.26113|
-|编译器|DTK aicc，Clang 18|DTK aicc，Clang 18|
+|编译器|DTK aicc，Clang 18.0.0|DTK aicc，Clang 18.0.0|
 |vLLM FLA来源版本|`0.18.1+das.dtk2604.torch2100.2606041655.ge5a62f`|`0.21.0+das.dtk2604.torch2100.2606111143.g8c979d`|
 |CK性能快照|`2e1414185bdc6aa5c6386b012626ec78d5ad3d7e` 对应已验收源|Prefill:`ab2c12d1bedbfd326c79fef7756fac241cefb999`；Decode:`ffaa2f2e425e1a7fdda1357102f1f020cda14a7f`|
 
