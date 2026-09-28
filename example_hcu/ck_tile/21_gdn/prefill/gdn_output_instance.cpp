@@ -341,6 +341,8 @@ void dispatch_output(const PrefillArguments& args, hipStream_t stream)
     case 1: launch_output_impl<DataType, 1>(args, stream); break;
     case 2: launch_output_impl<DataType, 2>(args, stream); break;
     case 4: launch_output_impl<DataType, 4>(args, stream); break;
+    // The prefill runner validates that the head ratio is 1, 2 or 4.
+    default: break;
     }
 }
 

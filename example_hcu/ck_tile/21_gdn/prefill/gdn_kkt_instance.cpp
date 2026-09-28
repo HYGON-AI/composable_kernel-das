@@ -45,6 +45,8 @@ void dispatch_kkt(const PrefillArguments& args, hipStream_t stream)
     case 1: launch_kkt_impl<Problem, 1>(args, stream); break;
     case 2: launch_kkt_impl<Problem, 2>(args, stream); break;
     case 4: launch_kkt_impl<Problem, 4>(args, stream); break;
+    // The prefill runner validates that the head ratio is 1, 2 or 4.
+    default: break;
     }
 }
 
