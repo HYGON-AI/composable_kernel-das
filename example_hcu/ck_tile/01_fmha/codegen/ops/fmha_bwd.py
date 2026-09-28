@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Tuple, Dict, Literal, Any
 
-from codegen.arch import ArchTrait, get_factories_for_targets
+from codegen.arch import ArchTrait, get_factories_for_targets, get_hcu_arch_tag
 from codegen.cmake_config import GEN_DIR
 from codegen.cpp_symbol_map import (
     get_mask_check_map,
@@ -489,10 +489,12 @@ class KernelComponentFactoryGfx9(KernelComponentFactoryBase):
 
 
 class KernelComponentFactoryGfx936(KernelComponentFactoryGfx9):
-    # HCU MMAC archs: same 16x16 warp tiles as the generic gfx9 factory, but the kernel
-    # is emitted with arch tag `void` (matching the FWD port and the `Arch = void`
-    # default of the fmha_bwd_dq_dk_dv_ dispatch declarations).
-    arch = ArchTrait("gfx936", preprocessor_check="defined(__gfx936__)", tag="void")
+    # Concrete type tags keep host-side specializations unique in multi-arch builds.
+    arch = ArchTrait(
+        "gfx936",
+        preprocessor_check="defined(__gfx936__)",
+        tag=get_hcu_arch_tag("gfx936"),
+    )
 
     @staticmethod
     def get_dq_dk_dv_tiles(dtype: str, tr_load: str) -> List[FmhaBwdDQDKDVTileSize]:
@@ -548,7 +550,11 @@ class KernelComponentFactoryGfx936(KernelComponentFactoryGfx9):
 
 
 class KernelComponentFactoryGfx938(KernelComponentFactoryGfx936):
-    arch = ArchTrait("gfx938", preprocessor_check="defined(__gfx938__)", tag="void")
+    arch = ArchTrait(
+        "gfx938",
+        preprocessor_check="defined(__gfx938__)",
+        tag=get_hcu_arch_tag("gfx938"),
+    )
 
 
 class KernelComponentFactoryGfx946(KernelComponentFactoryGfx936):

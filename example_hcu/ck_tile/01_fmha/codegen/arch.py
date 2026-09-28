@@ -5,6 +5,13 @@ from dataclasses import dataclass, field
 from typing import Any, List, Callable
 
 
+def get_hcu_arch_tag(name: str) -> str:
+    return (
+        "std::integral_constant<ck_tile::hcu_target_enum, "
+        f"ck_tile::hcu_target_enum::{name}>"
+    )
+
+
 @dataclass(frozen=True)
 class ArchTrait:
     name: str

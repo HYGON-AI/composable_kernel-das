@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Union
 
-from codegen.arch import ArchTrait, get_factories_for_targets
+from codegen.arch import ArchTrait, get_factories_for_targets, get_hcu_arch_tag
 from codegen.cmake_config import GEN_DIR
 from codegen.cpp_symbol_map import (
     PIPELINE_ENUM_MAP,
@@ -854,7 +854,7 @@ class KernelComponentFactoryGfx9(KernelComponentFactoryBase):
 
 
 class KernelComponentFactoryGfx936(KernelComponentFactoryGfx9):
-    arch = ArchTrait("gfx936", tag="void")
+    arch = ArchTrait("gfx936", tag=get_hcu_arch_tag("gfx936"))
 
     @staticmethod
     def get_combine_hdim_tile_size_dict(dtype: str) -> Optional[dict]:
@@ -873,7 +873,7 @@ class KernelComponentFactoryGfx936(KernelComponentFactoryGfx9):
 
 
 class KernelComponentFactoryGfx938(KernelComponentFactoryGfx936):
-    arch = ArchTrait("gfx938", tag="void")
+    arch = ArchTrait("gfx938", tag=get_hcu_arch_tag("gfx938"))
 
 
 class KernelComponentFactoryGfx11(KernelComponentFactoryBase):
@@ -1033,6 +1033,7 @@ def get_fwd_splitkv_blobs(
                     cond = dtype in ["fp16", "bf16"]
                     cond &= pipeline.F_vlayout == "row"
                     cond &= pipeline.F_bias in ["no", "bias"]
+                    cond &= pipeline.F_logits == "f"
                     cond &= pipeline.F_squant == "f"
                     cond &= mode == "batch"
                     cond &= pipeline.F_sink == "f"
