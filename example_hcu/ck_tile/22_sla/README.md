@@ -68,7 +68,7 @@ cmake -S . -B build \
   -DSLA_MATCH_EXTENSION_FLAGS=ON
 
 cmake --build build \
-  --target tile_example_sla_fwd tile_example_sla_bwd \
+  --target tile_example_sla_fwd tile_example_sla_bwd tile_example_sla_sizes \
   -j 8
 ```
 
@@ -83,6 +83,7 @@ bash example_hcu/ck_tile/22_sla/build.sh
 ```text
 build/bin/tile_example_sla_fwd
 build/bin/tile_example_sla_bwd
+build/bin/tile_example_sla_sizes
 ```
 
 ## 运行
@@ -145,6 +146,10 @@ build/bin/tile_example_sla_bwd
 | `-repeat` | 计时重复次数 | `100` | `100` |
 | `-seed` | 随机输入种子 | `1` | `1` |
 
+
+由于当前 SLA 内核的部分索引仍使用 32 位整数，示例要求
+`b * h * max(s, d) * d <= INT_MAX`，并在分配张量前检查此限制。
+多 stage 工作区的容量及偏移使用宽整数计算。
 
 ## 来源
 

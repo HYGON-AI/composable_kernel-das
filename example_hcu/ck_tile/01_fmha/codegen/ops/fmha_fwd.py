@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, ClassVar, Iterable, List, Optional, Tuple
 
-from codegen.arch import ArchTrait, get_factories_for_targets
+from codegen.arch import ArchTrait, get_factories_for_targets, get_hcu_arch_tag
 from codegen.cmake_config import GEN_DIR
 from codegen.cpp_symbol_map import (
     LAYOUT_MAP,
@@ -1179,7 +1179,11 @@ class KernelComponentFactoryGfx950(
 
 
 class KernelComponentFactoryGfx936(KernelComponentFactoryGfx9):
-    arch = ArchTrait("gfx936", preprocessor_check="defined(__gfx936__)", tag="void")
+    arch = ArchTrait(
+        "gfx936",
+        preprocessor_check="defined(__gfx936__)",
+        tag=get_hcu_arch_tag("gfx936"),
+    )
 
     @classmethod
     def supported_dtypes(cls) -> Tuple[str]:
@@ -1253,7 +1257,11 @@ class KernelComponentFactoryGfx936(KernelComponentFactoryGfx9):
         ):
             return []
 
-        mask = "s_no" if mask_impl == "simplified" else "no"
+        masks = (
+            ("s_no", "s_mask")
+            if mask_impl == "simplified"
+            else ("no", "causal")
+        )
         return [
             FmhaFwdPipeline(
                 "qr_async",
@@ -1264,7 +1272,7 @@ class KernelComponentFactoryGfx936(KernelComponentFactoryGfx9):
                 "t",
                 "f",
                 "no",
-                "f",
+                lse,
                 "f",
                 "no",
                 mask,
@@ -1272,6 +1280,8 @@ class KernelComponentFactoryGfx936(KernelComponentFactoryGfx9):
                 "f",
                 "f",
             )
+            for mask in masks
+            for lse in ("f", "t")
         ]
 
 
@@ -1284,7 +1294,11 @@ class KernelComponentFactoryGfx92a(KernelComponentFactoryGfx936):
 
 
 class KernelComponentFactoryGfx938(KernelComponentFactoryGfx936):
-    arch = ArchTrait("gfx938", preprocessor_check="defined(__gfx938__)", tag="void")
+    arch = ArchTrait(
+        "gfx938",
+        preprocessor_check="defined(__gfx938__)",
+        tag=get_hcu_arch_tag("gfx938"),
+    )
 
 
 class KernelComponentFactoryGfx946(KernelComponentFactoryGfx936):

@@ -8,7 +8,7 @@ namespace ck_tile {
 // GDN's FP32 accumulators must retain STANDARD BF16 rounding. Select in
 // registers so every scalar conversion does not split/rejoin the wave's EXEC
 // mask. Preserve the standard converter's NaN sign, payload and sticky bit.
-CK_TILE_DEVICE inline uint16_t gdn_float_to_bf16_rne(float value)
+CK_TILE_DEVICE uint16_t gdn_float_to_bf16_rne(float value)
 {
 #if defined(__HIP_DEVICE_COMPILE__) && (defined(__gfx936__) || defined(__gfx938__))
     const uint32_t bits = bit_cast<uint32_t>(value);

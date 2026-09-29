@@ -9,6 +9,9 @@ target_include_directories(tile_example_sla_fwd PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR})
 
 add_example_executable(tile_example_sla_bwd sla_bwd.cpp)
+add_example_executable(tile_example_sla_sizes test_sla_sizes.cpp)
+# The size-only test includes the runner without instantiating its GPU launchers.
+target_compile_options(tile_example_sla_sizes PRIVATE -Wno-unused-template)
 target_sources(tile_example_sla_bwd PRIVATE
   instances/sla_bwd_bf16_instance.cpp
   instances/sla_bwd_fp16_instance.cpp)
@@ -27,7 +30,8 @@ option(SLA_MATCH_EXTENSION_FLAGS
 
 set(_sla_targets
   tile_example_sla_fwd
-  tile_example_sla_bwd)
+  tile_example_sla_bwd
+  tile_example_sla_sizes)
 
 foreach(_sla_target IN LISTS _sla_targets)
   target_compile_options(${_sla_target} PRIVATE

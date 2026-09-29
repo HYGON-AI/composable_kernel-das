@@ -82,6 +82,12 @@ struct SlaBwdInstance
                          "and warmup/repeat>0\n";
             return 1;
         }
+        if(!ck_tile::example::sla::is_sla_shape_indexable(b, h, s, d))
+        {
+            std::cerr << "unsupported SLA shape: b*h*max(s,d)*d must fit in INT_MAX "
+                         "for 32-bit kernel indexing\n";
+            return 1;
+        }
         if(s == ck_tile::example::sla::kTunedSequenceLength && req_kv_stages != 0 &&
            req_kv_stages != ck_tile::example::sla::kTunedBwdDqStageCount)
         {
@@ -142,10 +148,10 @@ struct SlaBwdInstance
         ck_tile::DeviceMem lse_buf(lse_host);
         ck_tile::DeviceMem do_buf(do_host);
 
-        ck_tile::DeviceMem dq_buf(static_cast<size_t>(b * h * s * d) * sizeof(DataType));
-        ck_tile::DeviceMem dk_buf(static_cast<size_t>(b * h * s * d) * sizeof(DataType));
-        ck_tile::DeviceMem dv_buf(static_cast<size_t>(b * h * s * d) * sizeof(DataType));
-        ck_tile::DeviceMem delta_buf(static_cast<size_t>(b * h * s) * sizeof(float));
+        ck_tile::DeviceMem dq_buf(static_cast<size_t>(b) * h * s * d * sizeof(DataType));
+        ck_tile::DeviceMem dk_buf(static_cast<size_t>(b) * h * s * d * sizeof(DataType));
+        ck_tile::DeviceMem dv_buf(static_cast<size_t>(b) * h * s * d * sizeof(DataType));
+        ck_tile::DeviceMem delta_buf(static_cast<size_t>(b) * h * s * sizeof(float));
 
         dq_buf.SetZero();
         dk_buf.SetZero();
@@ -156,19 +162,19 @@ struct SlaBwdInstance
         const int rlut_stride_n =
             q_blocks * (block_m / ck_tile::example::sla::kQSliceBlockM);
 
-        ck_tile::DeviceMem sparse_map_buf(static_cast<size_t>(b * h * q_blocks * kv_blocks) * sizeof(int8_t));
-        ck_tile::DeviceMem lut_buf(static_cast<size_t>(b * h * q_blocks * max_nnz) * sizeof(int64_t));
-        ck_tile::DeviceMem lut_size_buf(static_cast<size_t>(b * h * q_blocks) * sizeof(int32_t));
+        ck_tile::DeviceMem sparse_map_buf(static_cast<size_t>(b) * h * q_blocks * kv_blocks * sizeof(int8_t));
+        ck_tile::DeviceMem lut_buf(static_cast<size_t>(b) * h * q_blocks * max_nnz * sizeof(int64_t));
+        ck_tile::DeviceMem lut_size_buf(static_cast<size_t>(b) * h * q_blocks * sizeof(int32_t));
 
-        ck_tile::DeviceMem rlut_buf(static_cast<size_t>(b * h * kv_blocks * rlut_stride_n) * sizeof(int32_t));
-        ck_tile::DeviceMem rsize_buf(static_cast<size_t>(b * h * kv_blocks) * sizeof(int32_t));
-        ck_tile::DeviceMem kv_perm_buf(static_cast<size_t>(b * h * kv_blocks) * sizeof(int32_t));
+        ck_tile::DeviceMem rlut_buf(static_cast<size_t>(b) * h * kv_blocks * rlut_stride_n * sizeof(int32_t));
+        ck_tile::DeviceMem rsize_buf(static_cast<size_t>(b) * h * kv_blocks * sizeof(int32_t));
+        ck_tile::DeviceMem kv_perm_buf(static_cast<size_t>(b) * h * kv_blocks * sizeof(int32_t));
         const bool use_dq_partition =
             max_nnz > ck_tile::example::sla::kDqLutStageCapacity ||
             dq_stage_count > 1 || BlockM == ck_tile::example::sla::kLargeBlockM;
         ck_tile::DeviceMem dq_partitioned_lut_buf(
             use_dq_partition
-                ? static_cast<size_t>(b * h * q_blocks * max_nnz) * sizeof(int64_t)
+                ? static_cast<size_t>(b) * h * q_blocks * max_nnz * sizeof(int64_t)
                 : 1);
         ck_tile::DeviceMem dq_workspace_buf(
             dq_stage_count > 1
@@ -308,10 +314,10 @@ struct SlaBwdInstance
 
         if(verify)
         {
-            ck_tile::DeviceMem ref_delta_buf(static_cast<size_t>(b * h * s) * sizeof(float));
-            ck_tile::DeviceMem ref_dq_buf(static_cast<size_t>(b * h * s * d) * sizeof(float));
-            ck_tile::DeviceMem ref_dk_buf(static_cast<size_t>(b * h * s * d) * sizeof(float));
-            ck_tile::DeviceMem ref_dv_buf(static_cast<size_t>(b * h * s * d) * sizeof(float));
+            ck_tile::DeviceMem ref_delta_buf(static_cast<size_t>(b) * h * s * sizeof(float));
+            ck_tile::DeviceMem ref_dq_buf(static_cast<size_t>(b) * h * s * d * sizeof(float));
+            ck_tile::DeviceMem ref_dk_buf(static_cast<size_t>(b) * h * s * d * sizeof(float));
+            ck_tile::DeviceMem ref_dv_buf(static_cast<size_t>(b) * h * s * d * sizeof(float));
             constexpr int num_threads = sla_reference::kReferenceBlockSize;
             hipLaunchKernelGGL(
                 (sla_reference::preprocess_ref<DataType>),

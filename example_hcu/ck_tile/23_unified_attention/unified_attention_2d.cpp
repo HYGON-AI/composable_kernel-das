@@ -43,6 +43,7 @@ auto create_args(int argc, char* argv[])
 }
 
 int main(int argc, char* argv[])
+try
 {
     const auto [ok, parser] = create_args(argc, argv);
     if(!ok) return 0;
@@ -62,7 +63,7 @@ int main(int argc, char* argv[])
     }
     // Validate lengths and page size before D192 builds metadata: its helper
     // indexes kv_lens and divides by block_size while constructing the problem.
-    const auto kv_lens = ck_tile::parse_query_lens_helper(parser.get_str("kv_lens"));
+    const auto kv_lens = ck_tile::parse_query_lens_helper(parser.get_str("kv_lens"), "kv_lens");
     const auto lengths = query_lens.empty() ? std::vector<int>{parser.get_int("nq")}
                                            : query_lens;
     if(parser.get_int("block_size") <= 0 ||
@@ -89,5 +90,10 @@ int main(int argc, char* argv[])
                    ? run_unified_attention_2d_d192<ck_tile::bf16_t>(parser, query_lens)
                    : run_unified_attention_2d_d256<ck_tile::bf16_t>(parser);
     std::cerr << "prec must be fp16 or bf16\n";
+    return 2;
+}
+catch(const std::exception& error)
+{
+    std::cerr << "invalid unified attention arguments: " << error.what() << '\n';
     return 2;
 }

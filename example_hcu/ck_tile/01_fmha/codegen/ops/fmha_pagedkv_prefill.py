@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from codegen.arch import ArchTrait, get_factories_for_targets
+from codegen.arch import ArchTrait, get_factories_for_targets, get_hcu_arch_tag
 from codegen.cmake_config import GEN_DIR
 from codegen.cpp_symbol_map import (
     LAYOUT_MAP,
@@ -602,7 +602,7 @@ class KernelComponentFactoryGfx9(KernelComponentFactoryBase):
 
 
 class KernelComponentFactoryGfx936(KernelComponentFactoryGfx9):
-    arch = ArchTrait("gfx936", tag="void")
+    arch = ArchTrait("gfx936", tag=get_hcu_arch_tag("gfx936"))
 
     @staticmethod
     def get_hdim_tile_size_dict(dtype: str) -> Optional[dict]:
@@ -615,7 +615,7 @@ class KernelComponentFactoryGfx936(KernelComponentFactoryGfx9):
 
 
 class KernelComponentFactoryGfx938(KernelComponentFactoryGfx936):
-    arch = ArchTrait("gfx938", tag="void")
+    arch = ArchTrait("gfx938", tag=get_hcu_arch_tag("gfx938"))
 
 
 class KernelComponentFactoryGfx11(KernelComponentFactoryBase):

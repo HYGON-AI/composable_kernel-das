@@ -16,5 +16,5 @@ cmake -S "${repo_root}" -B "${build_dir}" \
   -DSLA_MATCH_EXTENSION_FLAGS="${SLA_MATCH_EXTENSION_FLAGS:-ON}"
 
 cmake --build "${build_dir}" \
-  --target tile_example_sla_fwd tile_example_sla_bwd \
+  --target tile_example_sla_fwd tile_example_sla_bwd tile_example_sla_sizes \
   -j "${JOBS:-8}"

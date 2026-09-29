@@ -32,12 +32,16 @@ struct ChunkDeltaHCooperativeKernel
         const index_t row=stage*16+lane/4;
         const index_t col=wave*4+lane%4;
         const index_t pos=((row/16*4+row%4)*64+(row%16)/4*16+col)*8;
+        // Clang requires a C-style cast for the generic-to-LDS address-space conversion.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wold-style-cast"
         if constexpr(std::is_same_v<DataType,bf16_t>)
             return bit_cast<uint32x4_t>(__builtin_hcu_ds_read_m32x16_bf16_alt(
                 (__attribute__((address_space(3))) short*)(ptr+pos)));
         else
             return bit_cast<uint32x4_t>(__builtin_hcu_ds_read_m32x16_f16_alt(
                 (__attribute__((address_space(3))) __fp16*)(ptr+pos)));
+#pragma clang diagnostic pop
     }
     CK_TILE_DEVICE static void transpose4(thread_buffer<float,4>& x)
     {

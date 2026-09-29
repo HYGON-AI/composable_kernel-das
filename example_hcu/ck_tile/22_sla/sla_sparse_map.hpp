@@ -121,8 +121,8 @@ inline void launch_sparse_map(
     (void)lut_size_ptr;
     const int Lq_blocks = (Lq + BLKQ - 1) / BLKQ;
     const int Lk_blocks = (Lk + BLKK - 1) / BLKK;
-    ck_tile::DeviceMem pooled_q_buf(static_cast<size_t>(B * H * Lq_blocks * D) * sizeof(DataType));
-    ck_tile::DeviceMem pooled_k_buf(static_cast<size_t>(B * H * Lk_blocks * D) * sizeof(DataType));
+    ck_tile::DeviceMem pooled_q_buf(static_cast<size_t>(B) * H * Lq_blocks * D * sizeof(DataType));
+    ck_tile::DeviceMem pooled_k_buf(static_cast<size_t>(B) * H * Lk_blocks * D * sizeof(DataType));
     launch_sparse_map<DataType>(
         q_ptr, k_ptr,
         static_cast<DataType*>(pooled_q_buf.GetDeviceBuffer()),

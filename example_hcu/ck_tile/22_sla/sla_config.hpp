@@ -5,6 +5,7 @@
 #include "ck_tile/core.hpp"
 
 #include <cstddef>
+#include <limits>
 
 namespace ck_tile::example::sla {
 
@@ -25,5 +26,14 @@ inline constexpr index_t kTunedBwdDqStageCount       = 2;
 inline constexpr index_t kTunedSequenceLength        = 75648;
 inline constexpr index_t kLargeSequenceThreshold     = 64 * 1024;
 inline constexpr std::size_t kWorkspaceAlignment     = 256;
+
+// Pooling and sparse-map kernels still compute flattened offsets in int.
+// Bound both [B*H, S, D] tensors and [B*H, D, D] linear-attention matrices
+// before allocating anything. Division avoids overflow even for extreme CLI inputs.
+inline constexpr bool is_sla_shape_indexable(int b, int h, int s, int d)
+{
+    return b > 0 && h > 0 && s > 0 && d > 0 &&
+           b <= std::numeric_limits<int>::max() / h / (s > d ? s : d) / d;
+}
 
 } // namespace ck_tile::example::sla
