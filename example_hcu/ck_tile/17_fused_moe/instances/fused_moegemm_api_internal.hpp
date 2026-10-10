@@ -126,7 +126,9 @@ float fused_moegemm_swizzled_lds_(const ck_tile::stream_config& s, fused_moegemm
                                                  Ts_::Gemm0NInterleave,
                                                  Ts_::Gemm1NInterleave,
                                                  ck_tile::FusedMoeGemmWeightPermuteEnum::no_permute,
-                                                 Ts_::swizzled>;
+                                                 Ts_::swizzled,
+                                                 true /* pad hidden size */,
+                                                 false /* pad intermediate size */>;
     using f_shape  = ck_tile::FusedMoeGemmShape<typename Ts_::BlockTile_0,
                                                typename Ts_::WarpPerBlock_0,
                                                typename Ts_::WarpTile_0,
