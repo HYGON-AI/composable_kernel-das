@@ -203,8 +203,6 @@ using FmoeProblem = ck_tile::FusedMoeGemmPipelineProblem<ck_tile::fp16_t, // A
                                                          float,
                                                          float,
                                                          float,
-                                                         float,
-                                                         float,
                                                          float, // topk weight
                                                          int32_t,
                                                          ck_tile::element_wise::Silu,

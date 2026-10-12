@@ -17,17 +17,17 @@ template <typename ADataType_,
           typename AScaleDataType_,
           typename GScaleDataType_,
           typename DScaleDataType_,
-          typename GZeroPointDataType_,
-          typename DZeroPointDataType_,
           typename YSmoothScaleDataType_,
           typename TopkWeightDataType_,
           typename IndexDataType_,  // data type for all indexing
           typename GateActivation_, // = ck_tile::element_wise::Silu,
           typename BlockShape_,     // shoule be FusedMoeGemmShape
           typename Traits_,
+          typename GZeroPointDataType_ = AScaleDataType_,
+          typename DZeroPointDataType_ = AScaleDataType_,
           index_t Fused_quant_ = 0,
-          index_t QT_block_n = 1,
-          index_t QT_block_k = 1,
+          index_t QT_block_n   = 1,
+          index_t QT_block_k   = 1,
           index_t NumPrefetch_ = 2>
 struct FusedMoeGemmPipelineProblem
 {
