@@ -101,7 +101,21 @@ struct GroupedGemmSelectorPolicy
     // Production default after independent gfx936/gfx938 correctness and focused fallback
     // comparisons. Callers can still set this field false for an explicit V4 rollback.
     bool enable_p3_fp16_tn_m1024_k4096_route = true;
+    // v7 BF16 NN / TN (the uniform Direct-to-LDS kernels as device-args
+    // instances; see instances/grouped_gemm_v7_v8_bf16_{nn,tn}_device_args.cpp).
+    //
+    // OPT-IN, unlike every route above: these are the first landings of the v7
+    // uniform-pipeline kernels as CK instances, and the production NN/TN routes
+    // must not move until they are measured on the real shapes. The adapter also
+    // honours CK_TILE_GROUPED_GEMM_ENABLE_BF16_V7_V8 so the A/B does not
+    // need a rebuild; the disable side of those switches wins.
+    bool enable_bf16_v7_nn = false;
+    bool enable_bf16_v8_tn = false;
 };
+
+// The v7 kernels carry their group table in the kernel argument, and that
+// table is fixed at 16.
+constexpr std::int32_t kGroupedGemmV7MaxGroups = 16;
 
 enum class GroupedGemmInstanceId
 {
@@ -126,6 +140,10 @@ enum class GroupedGemmInstanceId
     v3_128_m4_full_padding_gfx936                   = 4010,
     v4_64_m01_4_gfx936                              = 4011,
     v6_m32_nonpadding_mle8_family_b_gfx936          = 4104,
+    // v7 family (the uniform Direct-to-LDS NN/TN kernels as device-args
+    // instances).
+    v7_bf16_nn                                     = 5000,
+    v8_bf16_tn                                     = 5001,
 };
 
 enum class GroupedGemmCandidateFamily
@@ -134,6 +152,7 @@ enum class GroupedGemmCandidateFamily
     gfx936_v3,
     gfx938_mls,
     v4,
+    v7,
 };
 
 struct GroupedGemmCandidateIdentity
@@ -143,7 +162,7 @@ struct GroupedGemmCandidateIdentity
     GroupedGemmCandidateFamily family;
 };
 
-inline constexpr std::array<GroupedGemmCandidateIdentity, 18>
+inline constexpr std::array<GroupedGemmCandidateIdentity, 20>
     grouped_gemm_candidate_registry{{
         {GroupedGemmInstanceId::bw_family_selected,
          "bw_family.selected",
@@ -199,6 +218,17 @@ inline constexpr std::array<GroupedGemmCandidateIdentity, 18>
         {GroupedGemmInstanceId::v6_m32_nonpadding_mle8_family_b_gfx936,
          "v6.32x128x64.nonpadding.selector_m_le_8.family_b.gfx936",
          GroupedGemmCandidateFamily::v4},
+        // v7: 256x256x16 tile, 8 waves (4m x 2n), 4-stage 16 KB LDS ring fed
+        // by Direct-to-LDS buffer loads, m32x16 / b64 LDS reads, two-group phase
+        // interleave and the LDS-staged dwordx4 epilogue. The suffix names the
+        // operand form, because that is what separates the NN entry (only the
+        // second operand is [k, feature]) from the TN one (both are).
+        {GroupedGemmInstanceId::v7_bf16_nn,
+         "v7.nn_b.uniform_d2l.256x256x16",
+         GroupedGemmCandidateFamily::v7},
+        {GroupedGemmInstanceId::v8_bf16_tn,
+         "v8.tn_ab.uniform_d2l.256x256x16",
+         GroupedGemmCandidateFamily::v7},
     }};
 
 constexpr const GroupedGemmCandidateIdentity*
@@ -229,6 +259,8 @@ enum class GroupedGemmSelectionReason
     p2_bf16_g8_gfx936_fc2_nn_fast_vmem3,
     p2_bf16_g8_gfx938_v5_fc1_route,
     p3_fp16_tn_m1024_k4096_route,
+    v7_bf16_nn,
+    v8_bf16_tn,
     v4_n_aligned,
     v4_fallback,
 };
@@ -319,6 +351,44 @@ constexpr GroupedGemmSelection select_grouped_gemm_candidate(
             return {GroupedGemmInstanceId::gfx938_mls_large_256,
                     GroupedGemmSelectionReason::p3_fp16_tn_m1024_k4096_route};
         }
+    }
+
+    // v7 BF16 NN / TN instances (opt-in; see policy.enable_bf16_v7_v8*).
+    //
+    // The gates are the kernels' own contract, not a shape whitelist:
+    //   K % 16 == 0 and K >= 64   -- the 16-deep k-stage and the 4-stage ring
+    //   N % 256 == 0              -- the LDS-staged epilogue stores whole 16 B
+    //                                row segments and carries no column
+    //                                predicate, so a partial N tile would write
+    //                                past the row
+    //   common K                  -- the k-advance of both streams is per-launch
+    //   non-empty groups          -- not validated for the walk yet; keep the
+    //                                fallback until they are
+    //   <= kGroupedGemmV7MaxGroups -- the device-side group table is what
+    //                                bounds the kargs scan at kernel entry
+    //   gfx936                    -- the kernels' ISA contract (v7 loads, the
+    //                                CACHE_SWIZZLE descriptor bit)
+    // TN additionally requires an M that the launcher can address: its A panel
+    // is [k, sum(M_g)] with a host-known pitch, and the panel load covers a whole
+    // 256-wide column tile, so a ragged last tile reads up to 256 columns past
+    // the group's last column. Reading into the NEXT group's columns is harmless
+    // (those rows are masked on the store), but the read past the LAST group's
+    // columns must land in storage the caller owns -- the reference kernel's
+    // documented tail-pad obligation, which the selector cannot verify. Ragged M
+    // is therefore allowed; the caller owns the pad.
+    const bool v7_contract =
+        problem.arch == GroupedGemmArch::gfx936 && !has_variable_k &&
+        problem.group_count <= kGroupedGemmV7MaxGroups &&
+        !problem.may_have_empty_groups && k >= 64 && k % 16 == 0 && n % 256 == 0;
+    if(v7_contract && is_bf16 && is_nn && policy.enable_bf16_v7_nn)
+    {
+        return {GroupedGemmInstanceId::v7_bf16_nn,
+                GroupedGemmSelectionReason::v7_bf16_nn};
+    }
+    if(v7_contract && is_bf16 && is_tn && policy.enable_bf16_v8_tn)
+    {
+        return {GroupedGemmInstanceId::v8_bf16_tn,
+                GroupedGemmSelectionReason::v8_bf16_tn};
     }
 
     const bool bw_arch_layout =

@@ -39,6 +39,13 @@
 #define CK_TILE_PIPELINE_COMPUTE_V3_W8_OVERLAP 8
 #define CK_TILE_PIPELINE_COMPUTE_V3_TRITON_OPERAND 9
 #define CK_TILE_PIPELINE_COMPUTE_V3_DSREADM_STAGE 10
+// Uniform (non warp-specialized) Direct-to-LDS grouped GEMM for the NN (dgrad)
+// and TN (wgrad) operand layouts. See
+// include/ck_tile/ops/gemm/pipeline/gemm_pipeline_v7_uniform.hpp.
+// Two ids: the layouts share the pipeline body but differ in the operand walk,
+// and the config carries the layout that the host-side selector gated on.
+#define CK_TILE_PIPELINE_COMPUTE_V7 12
+#define CK_TILE_PIPELINE_COMPUTE_V8 13
 
 #ifndef CK_TILE_PIPELINE_DEFAULT
 #define CK_TILE_PIPELINE_DEFAULT CK_TILE_PIPELINE_COMPUTE_V3
@@ -2114,6 +2121,32 @@ struct PipelineTypeTraits<CK_TILE_PIPELINE_MLS>
     using GemmPipeline = ck_tile::GemmPipelineAgBgCrMls<PipelineProblem>;
     template <typename PipelineProblem>
     using UniversalGemmPipeline = ck_tile::GemmPipelineAgBgCrMls<PipelineProblem>;
+};
+
+// The v7/v8 uniform pipeline's forward declarations (enum + template names)
+// arrive from grouped_gemm_kernel.hpp's inclusion of
+// gemm_pipeline_v7_uniform_fwd.hpp; the pipeline body and the configs are
+// completed only in the v7/v8 translation units (via the launch header).
+template <>
+struct PipelineTypeTraits<CK_TILE_PIPELINE_COMPUTE_V7>
+{
+    template <typename PipelineProblem>
+    using GemmPipeline =
+        ck_tile::GemmPipelineV7Uniform<PipelineProblem, ck_tile::V7UniformKind::NN>;
+    template <typename PipelineProblem>
+    using UniversalGemmPipeline =
+        ck_tile::GemmPipelineV7Uniform<PipelineProblem, ck_tile::V7UniformKind::NN>;
+};
+
+template <>
+struct PipelineTypeTraits<CK_TILE_PIPELINE_COMPUTE_V8>
+{
+    template <typename PipelineProblem>
+    using GemmPipeline =
+        ck_tile::GemmPipelineV7Uniform<PipelineProblem, ck_tile::V7UniformKind::TN>;
+    template <typename PipelineProblem>
+    using UniversalGemmPipeline =
+        ck_tile::GemmPipelineV7Uniform<PipelineProblem, ck_tile::V7UniformKind::TN>;
 };
 
 template <typename PrecType>

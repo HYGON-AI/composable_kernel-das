@@ -5,6 +5,9 @@
 #include "ck_tile/ops/gemm/grouped_gemm_selector.hpp"
 #include "ck_tile/ops/gemm/grouped_gemm_bw_family_selected.hpp"
 #include "ck_tile/host/device_prop.hpp"
+// Header-only: the tile bound the v7 instances are launched with. Nothing from
+// it is instantiated unless the v7 route runs (see grouped_gemm_v7_uniform_launch).
+#include "instances/grouped_gemm_v7_uniform_launch.hpp"
 
 #include <hip/hip_runtime.h>
 
@@ -43,6 +46,20 @@ ck_tile_hcu_grouped_gemm_bw_family_bf16_nn_rr_fixed_srd_lds8_boundary_lds0_vmem0
 extern "C" int
 ck_tile_hcu_grouped_gemm_bw_family_bf16_nn_rr_fast_vmem3_early_final_barrier_ck_device_args(
     void*, int, std::uint32_t, hipStream_t);
+#endif
+
+#if defined(CK_TILE_GROUPED_GEMM_DEVICE_ARGS_HAS_V7_V8_BF16)
+// Declared in grouped_gemm_bw_family_selected.hpp (with the enable switches).
+// The v7 instances take one extra argument the other families do not need: an
+// upper bound on the (group, m tile, n tile) tile count, rounded up to a whole
+// number of CTAs. Their config is non-persistent (one tile per CTA, by
+// construction -- see gemm_pipeline_v7_uniform.hpp), so the launcher has to size the
+// grid, and per-group M is device-resident. The bound is computed from the
+// problem's host-visible lengths/capacities below.
+extern "C" int ck_tile_hcu_grouped_gemm_v7_bf16_nn_device_args(
+    void*, int, std::uint32_t, hipStream_t, std::uint64_t);
+extern "C" int ck_tile_hcu_grouped_gemm_v8_bf16_tn_device_args(
+    void*, int, std::uint32_t, hipStream_t, std::uint64_t);
 #endif
 
 namespace {
@@ -110,6 +127,12 @@ static_assert(static_cast<std::int32_t>(ck_tile::GroupedGemmCandidateFamily::gfx
               CK_TILE_HCU_GROUPED_GEMM_CANDIDATE_FAMILY_GFX938_MLS_V1);
 static_assert(static_cast<std::int32_t>(ck_tile::GroupedGemmCandidateFamily::v4) ==
               CK_TILE_HCU_GROUPED_GEMM_CANDIDATE_FAMILY_V4_V1);
+static_assert(static_cast<std::uint32_t>(InstanceId::v7_bf16_nn) ==
+              CK_TILE_HCU_GROUPED_GEMM_INSTANCE_V7_BF16_NN_V1);
+static_assert(static_cast<std::uint32_t>(InstanceId::v8_bf16_tn) ==
+              CK_TILE_HCU_GROUPED_GEMM_INSTANCE_V8_BF16_TN_V1);
+static_assert(static_cast<std::int32_t>(ck_tile::GroupedGemmCandidateFamily::v7) ==
+              CK_TILE_HCU_GROUPED_GEMM_CANDIDATE_FAMILY_V7_V1);
 
 constexpr std::uint32_t KnownProblemFlags =
     CK_TILE_HCU_GROUPED_GEMM_PROBLEM_MAY_HAVE_EMPTY_GROUPS_V1 |
@@ -273,9 +296,23 @@ int convert_problem(const ck_tile_hcu_grouped_gemm_problem_v1* source,
     if(!ck_tile_hcu_grouped_gemm_bf16_tn_logical_k_tail_enabled())
         policy.enable_bf16_tn_logical_k_tail = false;
 
+    // v7 NN / TN: opt-in, so the env switch is the ENABLE side here (the
+    // selector's own default is false). See
+    // grouped_gemm_bw_family_selected.hpp for the switch semantics.
+    policy.enable_bf16_v7_nn = ck_tile_hcu_grouped_gemm_bf16_v7_nn_enabled();
+    policy.enable_bf16_v8_tn = ck_tile_hcu_grouped_gemm_bf16_v8_tn_enabled();
+
 #if !defined(CK_TILE_GROUPED_GEMM_DEVICE_ARGS_HAS_GFX936_PROMOTED)
     // Do not name InstanceId 1001/1002 when this TU cannot dispatch them.
     policy.enable_gfx936_bf16_nn_promoted = false;
+#endif
+
+#if !defined(CK_TILE_GROUPED_GEMM_DEVICE_ARGS_HAS_V7_V8_BF16)
+    // Same rule for InstanceId 5000/5001: this archive does not carry the v7
+    // entries (gfx936-only, dedicated codegen contract), so the route must not
+    // be selectable.
+    policy.enable_bf16_v7_nn = false;
+    policy.enable_bf16_v8_tn = false;
 #endif
 
 #if defined(CK_TILE_GROUPED_GEMM_P1_FAMILY_A_V3_128_GFX938_DISABLE)
@@ -405,6 +442,30 @@ int dispatch_registry_candidate(const ck_tile::GroupedGemmProblem& problem,
                 device_args, groups, launch.num_cu, stream);
 #endif
         break;
+    case ck_tile::GroupedGemmInstanceId::v7_bf16_nn:
+#if defined(CK_TILE_GROUPED_GEMM_DEVICE_ARGS_HAS_V7_V8_BF16)
+        if(dtype == ck_tile::GroupedGemmDataType::bf16 &&
+           layout == ck_tile::GroupedGemmLayout::nn)
+            return ck_tile_hcu_grouped_gemm_v7_bf16_nn_device_args(
+                device_args,
+                groups,
+                launch.num_cu,
+                stream,
+                v7_uniform_launch::block_id_range(problem, launch.num_cu));
+#endif
+        break;
+    case ck_tile::GroupedGemmInstanceId::v8_bf16_tn:
+#if defined(CK_TILE_GROUPED_GEMM_DEVICE_ARGS_HAS_V7_V8_BF16)
+        if(dtype == ck_tile::GroupedGemmDataType::bf16 &&
+           layout == ck_tile::GroupedGemmLayout::tn)
+            return ck_tile_hcu_grouped_gemm_v8_bf16_tn_device_args(
+                device_args,
+                groups,
+                launch.num_cu,
+                stream,
+                v7_uniform_launch::block_id_range(problem, launch.num_cu));
+#endif
+        break;
     case ck_tile::GroupedGemmInstanceId::gfx936_v3_256_m_only_padding:
     case ck_tile::GroupedGemmInstanceId::gfx936_v3_dsreadm_backward_m_only_padding:
     case ck_tile::GroupedGemmInstanceId::gfx936_v3_default_backward_m_only_padding:
@@ -513,6 +574,16 @@ void candidate_masks(ck_tile::GroupedGemmInstanceId id,
         architecture_mask = ArchGfx936;
         data_type_mask     = DTypeFp16;
         layout_mask        = LayoutNn;
+        break;
+    case ck_tile::GroupedGemmInstanceId::v7_bf16_nn:
+        architecture_mask = ArchGfx936;
+        data_type_mask     = DTypeBf16;
+        layout_mask        = LayoutNn;
+        break;
+    case ck_tile::GroupedGemmInstanceId::v8_bf16_tn:
+        architecture_mask = ArchGfx936;
+        data_type_mask     = DTypeBf16;
+        layout_mask        = LayoutTn;
         break;
     }
 }
