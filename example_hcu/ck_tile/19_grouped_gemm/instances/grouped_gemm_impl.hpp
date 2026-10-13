@@ -24,6 +24,7 @@
 #include "ck_tile/ops/gemm.hpp"
 #include "ck_tile/host.hpp"
 #include "../grouped_gemm.hpp"
+#include "../grouped_gemm_wasp_epilogue.hpp"
 
 namespace {
 
@@ -514,6 +515,14 @@ int run_grouped_gemm_c_impl(const ck_tile_hcu_grouped_gemm_desc* descs,
                 grouped_gemm_update_plain_desc_cache(descs, group_count);
             }
 
+            ck_tile::index_t flat_grid_size = 0;
+            for(const auto& arg : gemm_descs_vec)
+            {
+                flat_grid_size +=
+                    ck_tile::integer_divide_ceil(arg.M, GemmConfig::M_Tile) *
+                    ck_tile::integer_divide_ceil(arg.N, GemmConfig::N_Tile) * arg.k_batch;
+            }
+
             grouped_gemm_tileloop<GemmConfig,
                                   ALayout,
                                   BLayout,
@@ -528,7 +537,9 @@ int run_grouped_gemm_c_impl(const ck_tile_hcu_grouped_gemm_desc* descs,
                                              grouped_gemm_make_output_resets<GemmConfig,
                                                                              CDataType,
                                                                              CLayout>(gemm_descs_vec),
-                                             splitk);
+                                             splitk,
+                                             0,
+                                             flat_grid_size);
         }
         else
         {
@@ -762,12 +773,12 @@ float grouped_gemm(const std::vector<ck_tile::GroupedGemmHostArgsImpl<DsDataType
         using GemmPipeline = typename PipelineTypeTraits<
             GemmConfig::Pipeline>::template GemmPipeline<UniversalGemmProblem>;
 #if defined(CK_TILE_GROUPED_GEMM_DSREADM_OUTPUT_TILE_DIRECT_STORE)
-        using GemmEpilogue =
+        using GroupedGemmRegularEpilogue =
             GroupedGemmOutputTileDirectStoreEpilogue<GemmPipeline,
                                                       AccDataType,
                                                       CDataType>;
 #elif defined(CK_TILE_GROUPED_GEMM_TRITON_OPERAND_NO_D)
-        using GemmEpilogue =
+        using GroupedGemmRegularEpilogue =
             GroupedGemmDirectStoreEpilogue<AccDataType,
                                            CDataType,
 #if defined(CK_TILE_GROUPED_GEMM_GFX936_RR_BLAS_VENDOR_OPERAND_ORDER_V4)
@@ -814,7 +825,7 @@ float grouped_gemm(const std::vector<ck_tile::GroupedGemmHostArgsImpl<DsDataType
                                                  ? 1
                                                  : GemmConfig::CShuffleWarpGemmNInterleave>>;
 #if defined(CK_TILE_GROUPED_GEMM_DIRECT_STORE_EPILOGUE)
-        using GemmEpilogue = std::conditional_t<
+        using GroupedGemmRegularEpilogue = std::conditional_t<
             std::tuple_size_v<DsDataType> == 0 &&
                 memory_operation == ck_tile::memory_operation_enum::set,
             GroupedGemmDirectStoreEpilogue<AccDataType,
@@ -829,10 +840,14 @@ float grouped_gemm(const std::vector<ck_tile::GroupedGemmHostArgsImpl<DsDataType
 #endif
             CShuffleGemmEpilogue>;
 #else
-        using GemmEpilogue = CShuffleGemmEpilogue;
+        using GroupedGemmRegularEpilogue = CShuffleGemmEpilogue;
 #endif
 #endif
 
+        using GemmEpilogue = std::conditional_t<
+            ck_tile::is_grouped_gemm_wasp_pipeline<GemmPipeline>::value,
+            GroupedGemmWaspStoreEpilogue<AccDataType, CDataType, GemmPipeline>,
+            GroupedGemmRegularEpilogue>;
         using KernelBase =
             ck_tile::GroupedGemmKernel<TilePartitioner, GemmPipeline, GemmEpilogue>;
 #if defined(CK_TILE_GROUPED_GEMM_UNIQUE_KERNEL_TAG)
@@ -915,7 +930,8 @@ float grouped_gemm_tileloop(const ck_tile::stream_config& s,
                             void* kargs_ptr,
                             const std::vector<std::pair<void*, std::size_t>>& output_resets,
                             bool splitk,
-                            std::uint32_t requested_num_cu)
+                            std::uint32_t requested_num_cu,
+                            ck_tile::index_t flat_grid_size)
 {
     using GemmShape = ck_tile::TileGemmShape<
         ck_tile::sequence<GemmConfig::M_Tile, GemmConfig::N_Tile, GemmConfig::K_Tile>,
@@ -969,12 +985,12 @@ float grouped_gemm_tileloop(const ck_tile::stream_config& s,
         using GemmPipeline = typename PipelineTypeTraits<
             GemmConfig::Pipeline>::template GemmPipeline<UniversalGemmProblem>;
 #if defined(CK_TILE_GROUPED_GEMM_DSREADM_OUTPUT_TILE_DIRECT_STORE)
-        using GemmEpilogue =
+        using GroupedGemmRegularEpilogue =
             GroupedGemmOutputTileDirectStoreEpilogue<GemmPipeline,
                                                       AccDataType,
                                                       CDataType>;
 #elif defined(CK_TILE_GROUPED_GEMM_TRITON_OPERAND_NO_D)
-        using GemmEpilogue =
+        using GroupedGemmRegularEpilogue =
             GroupedGemmDirectStoreEpilogue<AccDataType,
                                            CDataType,
 #if defined(CK_TILE_GROUPED_GEMM_GFX936_RR_BLAS_VENDOR_OPERAND_ORDER_V4)
@@ -986,7 +1002,7 @@ float grouped_gemm_tileloop(const ck_tile::stream_config& s,
                                            UniversalGemmProblem::TransposeC>;
 #endif
 #else
-        using GemmEpilogue = ck_tile::CShuffleEpilogue<
+        using GroupedGemmRegularEpilogue = ck_tile::CShuffleEpilogue<
             ck_tile::CShuffleEpilogueProblem<ADataType,
                                              BDataType,
                                              ck_tile::tuple<>,
@@ -1021,6 +1037,10 @@ float grouped_gemm_tileloop(const ck_tile::stream_config& s,
                                                   ? 1
                                                   : GemmConfig::CShuffleWarpGemmNInterleave>>;
 #endif
+        using GemmEpilogue = std::conditional_t<
+            ck_tile::is_grouped_gemm_wasp_pipeline<GemmPipeline>::value,
+            GroupedGemmWaspStoreEpilogue<AccDataType, CDataType, GemmPipeline>,
+            GroupedGemmRegularEpilogue>;
         using KernelBase =
             ck_tile::GroupedGemmKernel<TilePartitioner,
                                        GemmPipeline,
@@ -1031,6 +1051,37 @@ float grouped_gemm_tileloop(const ck_tile::stream_config& s,
             UniqueKernelTag == 0,
             KernelBase,
             GroupedGemmKernelTagged<KernelBase, UniqueKernelTag>>;
+
+        if constexpr(ck_tile::is_grouped_gemm_wasp_pipeline<GemmPipeline>::value)
+        {
+            static_assert(memory_operation == ck_tile::memory_operation_enum::set,
+                          "Wasp grouped GEMM only supports direct output stores");
+            if(num_groups <= 0 || splitk || requested_num_cu != 0 || flat_grid_size <= 0)
+            {
+                throw std::runtime_error(
+                    "Wasp grouped GEMM requires non-split groups and an exact flat grid");
+            }
+
+            constexpr dim3 blocks = Kernel::BlockSize();
+            const dim3 grids{static_cast<unsigned int>(flat_grid_size), 1, 1};
+            if(s.log_level_ > 0)
+            {
+                std::cout << "Launching Wasp grouped GEMM with exact grid: {" << grids.x
+                          << ", 1, 1}, blocks: {" << blocks.x << ", 1, 1}" << std::endl;
+            }
+
+            using WaspKernel = ck_tile::GroupedGemmWaspKernel<Kernel>;
+            const auto kernel = ck_tile::make_kernel<blocks.x, GemmConfig::kBlockPerCu>(
+                WaspKernel{},
+                grids,
+                blocks,
+                0,
+                ck_tile::cast_pointer_to_constant_address_space(kargs_ptr),
+                num_groups);
+            ave_time = ck_tile::launch_kernel(s, kernel);
+            return ave_time;
+        }
+
         constexpr dim3 blocks = Kernel::BlockSize();
         dim3 grids = Kernel::MaxOccupancyGridSize(s);
         if(requested_num_cu > 0)

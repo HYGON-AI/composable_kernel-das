@@ -53,6 +53,17 @@ struct is_grouped_gemm_v7_uniform_pipeline<T, std::void_t<decltype(T::IsV7Unifor
 {
 };
 
+template <typename T, typename = void>
+struct is_grouped_gemm_wasp_pipeline : std::false_type
+{
+};
+
+template <typename T>
+struct is_grouped_gemm_wasp_pipeline<T, std::void_t<decltype(T::IsWaspPipeline)>>
+    : std::bool_constant<T::IsWaspPipeline>
+{
+};
+
 /// @brief The Grouped GEMM kernel host arguments.
 ///
 /// @par Overview
@@ -391,6 +402,38 @@ struct GroupedGemmKernel
 
     CK_TILE_HOST static bool IsSupportedArgument(const std::vector<TransKernelArg>& kargs)
     {
+        if constexpr(is_grouped_gemm_wasp_pipeline<GemmPipeline>::value)
+        {
+            if(kargs.empty())
+            {
+                return false;
+            }
+            if(get_hcu_target_enum() != hcu_target_enum::gfx936)
+            {
+                return false;
+            }
+            if constexpr(!std::is_same_v<ALayout, tensor_layout::gemm::RowMajor> ||
+                         !std::is_same_v<BLayout, tensor_layout::gemm::ColumnMajor> ||
+                         !std::is_same_v<CLayout, tensor_layout::gemm::RowMajor> ||
+                         !std::is_same_v<ADataType, bf16_t> ||
+                         !std::is_same_v<BDataType, bf16_t> ||
+                         !std::is_same_v<CDataType, bf16_t>)
+            {
+                return false;
+            }
+            for(const auto& karg : kargs)
+            {
+                const auto& args = karg.group_karg;
+                if(args.k_batch != 1 || args.K % GemmPipeline::KPerBlock != 0 ||
+                   args.N % TilePartitioner::NPerBlock != 0 ||
+                   args.stride_As[0] < args.K || args.stride_Bs[0] < args.K ||
+                   args.stride_E < args.N)
+                {
+                    return false;
+                }
+            }
+        }
+
         if constexpr(is_grouped_gemm_mls_pipeline<GemmPipeline>::value)
         {
             if(get_hcu_target_enum() != hcu_target_enum::gfx938)
@@ -639,7 +682,19 @@ struct GroupedGemmKernel
                                  splitk_batch_offset.bs_k_split_offset[0];
         CDataType* c_ptr = static_cast<CDataType*>(kargs.e_ptr);
 
-        if constexpr(is_grouped_gemm_v7_uniform_pipeline<GemmPipeline>::value)
+        if constexpr(is_grouped_gemm_wasp_pipeline<GemmPipeline>::value)
+        {
+            __shared__ char smem_ptr_0[GetSmemSize()];
+            RunGemmWasp(a_ptr,
+                        b_ptr,
+                        c_ptr,
+                        smem_ptr_0,
+                        kargs,
+                        splitk_batch_offset,
+                        i_m,
+                        i_n);
+        }
+        else if constexpr(is_grouped_gemm_v7_uniform_pipeline<GemmPipeline>::value)
         {
             // The v7 ring comes from DYNAMIC shared memory: the launcher
             // passes GetSmemSize() bytes, and the pipeline's inline asm
@@ -833,6 +888,55 @@ struct GroupedGemmKernel
         AccTile acc;
         GemmPipeline{}.run_tile(p, acc, p_smem);
         EpiloguePipeline{}.store_tile(p, acc, p_smem);
+    }
+
+    CK_TILE_DEVICE static void
+    RunGemmWasp(const ADataType* a_ptr,
+                const BDataType* b_ptr,
+                CDataType* d_ptr,
+                void* p_smem,
+                const KernelArgs& kargs,
+                const typename Base::SplitKBatchOffset& splitk_batch_offset,
+                const index_t block_idx_m,
+                const index_t block_idx_n)
+    {
+        static_assert(is_grouped_gemm_wasp_pipeline<GemmPipeline>::value);
+        static_assert(std::is_same_v<ALayout, tensor_layout::gemm::RowMajor> &&
+                          std::is_same_v<BLayout, tensor_layout::gemm::ColumnMajor> &&
+                          std::is_same_v<CLayout, tensor_layout::gemm::RowMajor>,
+                      "The Wasp grouped path is specialized for NT GEMM");
+        static_assert(GemmPipeline::kNumProducerWaves == 4 &&
+                          GemmPipeline::kNumConsumerWaves == 8,
+                      "The Wasp grouped path requires 4 producer + 8 consumer waves");
+
+        const index_t num_loop = __builtin_amdgcn_readfirstlane(
+            TilePartitioner::GetLoopNum(splitk_batch_offset.splitted_k));
+        const index_t row_base = block_idx_m;
+        const index_t col_base = block_idx_n;
+
+        const auto* const a_tile = a_ptr + row_base * kargs.stride_As[0];
+        const auto* const b_tile = b_ptr + col_base * kargs.stride_Bs[0];
+        using AccTile = typename GemmPipeline::AccTile;
+        AccTile acc;
+        GemmPipeline{}.run_raw_into(a_tile,
+                                    kargs.stride_As[0],
+                                    kargs.M - row_base,
+                                    b_tile,
+                                    kargs.stride_Bs[0],
+                                    kargs.N,
+                                    col_base,
+                                    num_loop,
+                                    acc,
+                                    p_smem);
+
+        EpiloguePipeline::store_raw(d_ptr,
+                                    kargs.stride_E,
+                                    kargs.M,
+                                    kargs.N,
+                                    row_base,
+                                    col_base,
+                                    acc,
+                                    p_smem);
     }
 
     CK_TILE_DEVICE static void
@@ -1224,6 +1328,95 @@ struct GroupedGemmKernel
                 }
             }
         }
+    }
+};
+
+template <typename GroupedKernel>
+struct GroupedGemmWaspKernel
+{
+    using TilePartitioner  = typename GroupedKernel::TilePartitioner;
+    using GemmPipeline     = typename GroupedKernel::GemmPipeline;
+    using EpiloguePipeline = typename GroupedKernel::EpiloguePipeline;
+    using KernelArgs       = typename GroupedKernel::KernelArgs;
+    using TransKernelArg   = typename GroupedKernel::TransKernelArg;
+    using ADataType        = typename GroupedKernel::ADataType;
+    using BDataType        = typename GroupedKernel::BDataType;
+    using CDataType        = typename GroupedKernel::CDataType;
+    using OffsetTile1DPartitioner = typename GroupedKernel::OffsetTile1DPartitioner;
+
+    static constexpr index_t kBlockSize = GroupedKernel::kBlockSize;
+
+    CK_TILE_DEVICE void
+    operator()(const void CK_TILE_CONSTANT_ADDRESS_SPACE* gemm_desc_const,
+               index_t group_count) const
+    {
+        static_assert(is_grouped_gemm_wasp_pipeline<GemmPipeline>::value);
+
+        const auto* const descs = reinterpret_cast<const TransKernelArg*>(
+            cast_pointer_to_generic_address_space(gemm_desc_const));
+        const index_t block_id = get_block_1d_id();
+
+        // MakeKargs assigns each group a contiguous interval in the flat grid.
+        index_t first_group = 0;
+        index_t last_group  = group_count;
+        while(first_group < last_group)
+        {
+            const index_t mid = first_group + (last_group - first_group) / 2;
+            if(block_id >= descs[mid].block_end)
+            {
+                first_group = mid + 1;
+            }
+            else
+            {
+                last_group = mid;
+            }
+        }
+        if(first_group >= group_count || block_id < descs[first_group].block_start)
+        {
+            return;
+        }
+
+        const auto& desc = descs[first_group];
+        const KernelArgs& kargs = desc.group_karg;
+
+        index_t tile_id = block_id - desc.block_start;
+#if defined(CK_TILE_GROUPED_GEMM_WASP_REVERSE_CTA_ORDER)
+        tile_id = TilePartitioner::GridSize(kargs.M, kargs.N) - 1 - tile_id;
+#endif
+        const auto [i_m, i_n] =
+            OffsetTile1DPartitioner::GetOffsetedTileIndex(0, kargs.M, kargs.N, tile_id);
+        const index_t row_base = i_m * TilePartitioner::MPerBlock;
+        const index_t col_base = i_n * TilePartitioner::NPerBlock;
+
+        const auto* const a_tile =
+            static_cast<const ADataType*>(kargs.as_ptr[0]) +
+            row_base * kargs.stride_As[0];
+        const auto* const b_tile =
+            static_cast<const BDataType*>(kargs.bs_ptr[0]) +
+            col_base * kargs.stride_Bs[0];
+        auto* const d_ptr = static_cast<CDataType*>(kargs.e_ptr);
+
+        __shared__ char smem[GroupedKernel::GetSmemSize()];
+        using AccTile = typename GemmPipeline::AccTile;
+        AccTile acc;
+        GemmPipeline{}.run_raw_into(a_tile,
+                                    kargs.stride_As[0],
+                                    kargs.M - row_base,
+                                    b_tile,
+                                    kargs.stride_Bs[0],
+                                    kargs.N,
+                                    col_base,
+                                    TilePartitioner::GetLoopNum(kargs.K),
+                                    acc,
+                                    smem);
+        EpiloguePipeline::store_raw(d_ptr,
+                                    kargs.stride_E,
+                                    kargs.M,
+                                    kargs.N,
+                                    row_base,
+                                    col_base,
+                                    acc,
+                                    smem);
     }
 };
 

@@ -38,6 +38,11 @@
 //   grouped_gemm_v7_instance_test [--layout=NN|TN] [--m=512] [--n=512]
 //                                   [--k=256] [--groups=2] [--iters=20]
 //                                   [--warmup=3] [--check=1] [--ref=1]
+//                                   [--hipblaslt-ref=0] [--hipblaslt-perf=0]
+//   --hipblaslt-ref=1: verify against one hipBLASLt GEMM per group, compared
+//       on the device (no CPU pass over the output)
+//   --hipblaslt-perf=1: time hipBLASLt (plans built once, bare Matmul in the
+//       loop) and print blas_ms / blas_tf next to the v7 numbers
 
 #include <hip/hip_runtime.h>
 
@@ -45,6 +50,11 @@
 #include "ck_tile/ops/gemm/grouped_gemm_device_args.h"
 #include "ck_tile/host/device_prop.hpp"
 #include "ck_tile/ops/gemm/kernel/grouped_gemm_kernel.hpp"
+
+#if defined(CK_TILE_V7_TEST_HAS_HIPBLASLT)
+#include <hipblaslt/hipblaslt.h>
+#include <hipblaslt/hipblaslt-ext.hpp>
+#endif
 
 #include <cmath>
 #include <cstdint>
@@ -85,6 +95,15 @@ struct Options
     bool dump          = false;
     // Grid override. 0 => the device's CU count (the production value).
     int num_cu         = 0;
+    // Device-side functional reference: run the same kargs through hipBLASLt
+    // (one plain GEMM per group) and compare on the GPU -- no CPU pass over the
+    // output, so production shapes check in seconds. Built only when the
+    // hipBLASLt install is present (see CMakeLists CK_TILE_V7_TEST_HAS_HIPBLASLT).
+    bool hipblaslt_ref = false;
+    // Performance reference: time hipBLASLt (plans built once, bare Matmul in
+    // the loop) with the same warmup/iters as the v7 timing, and print
+    // blas_ms / blas_tf next to v7_ms / v7_tf.
+    bool hipblaslt_perf = false;
 };
 
 std::size_t align_to(std::size_t value, std::size_t alignment)
@@ -230,6 +249,14 @@ void parse_args(int argc, char* argv[], Options& options)
         {
             options.num_cu = parse_int_arg(value_of("num-cu"), "num-cu");
         }
+        else if(arg.rfind("--hipblaslt-ref=", 0) == 0)
+        {
+            options.hipblaslt_ref = parse_int_arg(value_of("hipblaslt-ref"), "hipblaslt-ref") != 0;
+        }
+        else if(arg.rfind("--hipblaslt-perf=", 0) == 0)
+        {
+            options.hipblaslt_perf = parse_int_arg(value_of("hipblaslt-perf"), "hipblaslt-perf") != 0;
+        }
         else
         {
             std::fprintf(stderr, "unknown argument: %s\n", arg.c_str());
@@ -334,6 +361,452 @@ void cpu_reference(Case& c)
         }
     }
 }
+
+#if defined(CK_TILE_V7_TEST_HAS_HIPBLASLT)
+// ---------------------------------------------------------------------------
+// Device-side functional reference: one plain hipBLASLt GEMM per group, then a
+// device-side element compare -- the output never touches the CPU, so
+// production shapes verify in seconds.
+//
+// The col-major formulation (same construction bf16_gemm_hipblaslt.cpp uses):
+//   D_row[M_g, N] = A . B   <=>   C_col[N, M_g] = B_view[N, K] . A_view[K, M_g]
+// with B_view the [N, K] col-major view of the [K, N] row-major B (ld = N),
+// and A_view the operand buffer seen as
+//   NN: [K, M_g] col-major, ld = K        (the [M_g, K] row-major A)  -> opB = N
+//   TN: [M_g, K] col-major, ld = pitch    (the [K, pitch] A panel)   -> opB = T
+// The panel leading dimension is the one thing the bf16_gemm_hipblaslt wrapper
+// cannot express for the grouped TN operand (it hardcodes ldb = k); here it is
+// passed explicitly.
+// ---------------------------------------------------------------------------
+void hipblaslt_check_status(hipblasStatus_t status, const char* what)
+{
+    if(status != HIPBLAS_STATUS_SUCCESS)
+    {
+        std::fprintf(stderr,
+                     "hipBLASLt error %d at %s\n",
+                     static_cast<int>(status),
+                     what);
+        std::exit(1);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tuned-solution table -- same file and semantics as bf16_gemm_hipblaslt.cpp
+// (BF16GEMM_HIPBLASLT_SOLUTION_FILE selects it, BF16GEMM_NO_TUNING=1 disables;
+// lines "m,n,k,transA,transB,solution_index", '*' = wildcard, '#' comments).
+// The keys live in THIS test's hipblasLt parameter space (m = caller N,
+// n = M_g, k = K; transA is always N here, transB = T for the TN panel form),
+// which is the same space the wrapper tunes in. Resolution: best-scoring
+// entry -> hipblaslt_ext getAlgosFromIndex + matmulIsAlgoSupported -> else the
+// stock heuristic, warning once per rejected key.
+// ---------------------------------------------------------------------------
+struct TunedSolution
+{
+    long long m = -1, n = -1, k = -1;   // -1 = wildcard
+    char ta = '?', tb = '?';
+    int index = -1;
+};
+
+static long long tuned_num(const std::string& s)
+{
+    return (s == "*") ? -1 : std::strtoll(s.c_str(), nullptr, 10);
+}
+
+static bool tuned_hit(long long key, long long want)
+{
+    return key < 0 || key == want;
+}
+
+static bool tuned_hit(char key, char want)
+{
+    return key == '*' || key == '?' || key == want;
+}
+
+static const std::vector<TunedSolution>& tuned_table()
+{
+    static const std::vector<TunedSolution> table = [] {
+        std::vector<TunedSolution> t;
+        const char* disable = std::getenv("BF16GEMM_NO_TUNING");
+        if(disable != nullptr && std::atoi(disable) != 0)
+        {
+            return t;
+        }
+        const char* path = std::getenv("BF16GEMM_HIPBLASLT_SOLUTION_FILE");
+        if(path == nullptr || *path == '\0')
+        {
+            return t;
+        }
+        FILE* f = std::fopen(path, "r");
+        if(f == nullptr)
+        {
+            std::fprintf(stderr,
+                         "[hipblasLt] WARNING: cannot open '%s', using the stock heuristic\n",
+                         path);
+            return t;
+        }
+        char line[512];
+        while(std::fgets(line, sizeof(line), f) != nullptr)
+        {
+            char* p = line;
+            while(*p == ' ' || *p == '\t')
+            {
+                ++p;
+            }
+            if(*p == '#' || *p == '\n' || *p == '\r' || *p == '\0')
+            {
+                continue;
+            }
+            std::string fields[6];
+            int nf = 0;
+            for(char* tok = std::strtok(p, ", \t\r\n"); tok != nullptr && nf < 6;
+                tok = std::strtok(nullptr, ", \t\r\n"))
+            {
+                fields[nf++] = tok;
+            }
+            if(nf < 6)
+            {
+                std::fprintf(stderr, "[hipblasLt] WARNING: malformed line ignored: %s", line);
+                continue;
+            }
+            TunedSolution e;
+            e.m  = tuned_num(fields[0]);
+            e.n  = tuned_num(fields[1]);
+            e.k  = tuned_num(fields[2]);
+            e.ta = static_cast<char>(std::toupper(static_cast<unsigned char>(fields[3][0])));
+            e.tb = static_cast<char>(std::toupper(static_cast<unsigned char>(fields[4][0])));
+            e.index = static_cast<int>(std::strtol(fields[5].c_str(), nullptr, 10));
+            t.push_back(e);
+        }
+        std::fclose(f);
+        std::fprintf(stderr,
+                     "[hipblasLt] tuned-solution table: %zu entries from %s\n",
+                     t.size(),
+                     path);
+        return t;
+    }();
+    return table;
+}
+
+static bool tuned_pick(long long m, long long n, long long k, char ta, char tb, int& index)
+{
+    int best_score = 6;
+    bool found     = false;
+    for(const TunedSolution& e : tuned_table())
+    {
+        if(!(tuned_hit(e.m, m) && tuned_hit(e.n, n) && tuned_hit(e.k, k) &&
+             tuned_hit(e.ta, ta) && tuned_hit(e.tb, tb)))
+        {
+            continue;
+        }
+        const int score = (e.m < 0 ? 1 : 0) + (e.n < 0 ? 1 : 0) + (e.k < 0 ? 1 : 0) +
+                          ((e.ta == '*' || e.ta == '?') ? 1 : 0) +
+                          ((e.tb == '*' || e.tb == '?') ? 1 : 0);
+        if(score < best_score)
+        {
+            best_score = score;
+            index      = e.index;
+            found      = true;
+            if(score == 0)
+            {
+                break;   // exact key: cannot do better
+            }
+        }
+    }
+    return found;
+}
+
+// D = 1.0 * op(B) . op(A) + 0.0, all bf16 in / bf16 out, fp32 compute.
+// Descriptor + algorithm selection is split from the execution: the perf
+// reference builds each group's plan once and times bare hipblasLtMatmul
+// calls, exactly what a production consumer would do.
+struct HipblasltPlan
+{
+    hipblasLtMatmulDesc_t desc       = nullptr;
+    hipblasLtMatrixLayout_t a_layout = nullptr;   // the B operand, col-major [N, K], ld = N
+    hipblasLtMatrixLayout_t b_layout = nullptr;   // the A operand
+    hipblasLtMatrixLayout_t c_layout = nullptr;   // D, col-major [N, M_g], ld = N
+    hipblasLtMatmulAlgo_t algo{};
+};
+
+bool hipblaslt_make_plan(HipblasltPlan& plan,
+                         hipblasLtHandle_t handle,
+                         void* workspace,
+                         std::size_t workspace_size,
+                         int m_g,
+                         int n,
+                         int k,
+                         int ld_a,
+                         bool tn)
+{
+    (void)workspace;   // the workspace pointer only matters at Matmul time
+    hipblasLtMatmulPreference_t pref = nullptr;
+
+    hipblasOperation_t op_a = HIPBLAS_OP_N;
+    hipblasOperation_t op_b = tn ? HIPBLAS_OP_T : HIPBLAS_OP_N;
+
+    hipblaslt_check_status(
+        hipblasLtMatmulDescCreate(&plan.desc, HIPBLAS_COMPUTE_32F, HIP_R_32F),
+        "hipblasLtMatmulDescCreate");
+    hipblaslt_check_status(
+        hipblasLtMatmulDescSetAttribute(plan.desc,
+                                        HIPBLASLT_MATMUL_DESC_TRANSA,
+                                        &op_a,
+                                        sizeof(op_a)),
+        "SetAttribute(TRANSA)");
+    hipblaslt_check_status(
+        hipblasLtMatmulDescSetAttribute(plan.desc,
+                                        HIPBLASLT_MATMUL_DESC_TRANSB,
+                                        &op_b,
+                                        sizeof(op_b)),
+        "SetAttribute(TRANSB)");
+    hipblaslt_check_status(
+        hipblasLtMatrixLayoutCreate(&plan.a_layout,
+                                    HIP_R_16BF,
+                                    static_cast<std::size_t>(n),
+                                    static_cast<std::size_t>(k),
+                                    static_cast<std::size_t>(n)),
+        "LayoutCreate(B view)");
+    // opT stores the [K, M_g] logical matrix through the [M_g, K] panel: ld is
+    // the panel pitch, not K.
+    const std::size_t b_ld = tn ? static_cast<std::size_t>(ld_a)
+                                : static_cast<std::size_t>(k);
+    hipblaslt_check_status(
+        hipblasLtMatrixLayoutCreate(&plan.b_layout,
+                                    HIP_R_16BF,
+                                    static_cast<std::size_t>(k),
+                                    static_cast<std::size_t>(m_g),
+                                    b_ld),
+        "LayoutCreate(A view)");
+    hipblaslt_check_status(
+        hipblasLtMatrixLayoutCreate(&plan.c_layout,
+                                    HIP_R_16BF,
+                                    static_cast<std::size_t>(n),
+                                    static_cast<std::size_t>(m_g),
+                                    static_cast<std::size_t>(n)),
+        "LayoutCreate(D)");
+
+    hipblaslt_check_status(
+        hipblasLtMatmulPreferenceCreate(&pref),
+        "hipblasLtMatmulPreferenceCreate");
+    hipblaslt_check_status(
+        hipblasLtMatmulPreferenceSetAttribute(
+            pref,
+            HIPBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES,
+            &workspace_size,
+            sizeof(workspace_size)),
+        "PreferenceSetAttribute(WORKSPACE)");
+
+    // 1) tuned table (best-scoring entry, resolved through the ext API);
+    // 2) stock heuristic. A table entry the library rejects only warns.
+    const char ta_ch = (op_a == HIPBLAS_OP_N) ? 'N' : 'T';
+    const char tb_ch = (op_b == HIPBLAS_OP_N) ? 'N' : 'T';
+    int tuned_index  = -1;
+    if(tuned_pick(n, m_g, k, ta_ch, tb_ch, tuned_index))
+    {
+        std::vector<hipblasLtMatmulHeuristicResult_t> resolved(1);
+        std::vector<int> algo_index(1, tuned_index);
+        const float probe_alpha = 1.0f;
+        const float probe_beta  = 0.0f;
+        std::size_t required    = 0;
+        if(hipblaslt_ext::getAlgosFromIndex(handle, algo_index, resolved) !=
+               HIPBLAS_STATUS_SUCCESS ||
+           resolved[0].state != HIPBLAS_STATUS_SUCCESS)
+        {
+            std::fprintf(stderr,
+                         "[hipblasLt] WARNING: solution index %d does not exist; "
+                         "stock heuristic for m=%d n=%d k=%d trans=%c%c\n",
+                         tuned_index,
+                         n,
+                         m_g,
+                         k,
+                         ta_ch,
+                         tb_ch);
+        }
+        else if(hipblaslt_ext::matmulIsAlgoSupported(handle,
+                                                     plan.desc,
+                                                     &probe_alpha,
+                                                     plan.a_layout,
+                                                     plan.b_layout,
+                                                     &probe_beta,
+                                                     plan.c_layout,
+                                                     plan.c_layout,
+                                                     resolved[0].algo,
+                                                     required) !=
+                    HIPBLAS_STATUS_SUCCESS)
+        {
+            std::fprintf(stderr,
+                         "[hipblasLt] WARNING: solution index %d unsupported here; "
+                         "stock heuristic for m=%d n=%d k=%d trans=%c%c\n",
+                         tuned_index,
+                         n,
+                         m_g,
+                         k,
+                         ta_ch,
+                         tb_ch);
+        }
+        else if(required > workspace_size)
+        {
+            std::fprintf(stderr,
+                         "[hipblasLt] WARNING: solution index %d needs %zu bytes "
+                         "workspace (have %zu); stock heuristic\n",
+                         tuned_index,
+                         required,
+                         workspace_size);
+        }
+        else
+        {
+            plan.algo = resolved[0].algo;
+            std::fprintf(stderr,
+                         "[hipblasLt] tuned: m=%d n=%d k=%d trans=%c%c -> index=%d\n",
+                         n,
+                         m_g,
+                         k,
+                         ta_ch,
+                         tb_ch,
+                         tuned_index);
+            hipblasLtMatmulPreferenceDestroy(pref);
+            return true;
+        }
+    }
+
+    hipblasLtMatmulHeuristicResult_t algo{};
+    int algo_count = 0;
+    hipblaslt_check_status(
+        hipblasLtMatmulAlgoGetHeuristic(handle,
+                                        plan.desc,
+                                        plan.a_layout,
+                                        plan.b_layout,
+                                        plan.c_layout,
+                                        plan.c_layout,
+                                        pref,
+                                        1,
+                                        &algo,
+                                        &algo_count),
+        "hipblasLtMatmulAlgoGetHeuristic");
+    const bool ok = algo_count > 0;
+    if(ok)
+    {
+        plan.algo = algo.algo;
+    }
+    hipblasLtMatmulPreferenceDestroy(pref);
+    return ok;
+}
+
+void hipblaslt_run_plan(const HipblasltPlan& plan,
+                        hipblasLtHandle_t handle,
+                        void* workspace,
+                        std::size_t workspace_size,
+                        hipStream_t stream,
+                        const void* b_dev,
+                        const void* a_dev,
+                        void* d_dev)
+{
+    const float alpha = 1.0f;
+    const float beta  = 0.0f;
+    hipblaslt_check_status(
+        hipblasLtMatmul(handle,
+                        plan.desc,
+                        &alpha,
+                        b_dev,
+                        plan.a_layout,
+                        a_dev,
+                        plan.b_layout,
+                        &beta,
+                        d_dev,
+                        plan.c_layout,
+                        d_dev,
+                        plan.c_layout,
+                        &plan.algo,
+                        workspace,
+                        workspace_size,
+                        stream),
+        "hipblasLtMatmul");
+}
+
+void hipblaslt_destroy_plan(HipblasltPlan& plan)
+{
+    hipblasLtMatrixLayoutDestroy(plan.c_layout);
+    hipblasLtMatrixLayoutDestroy(plan.b_layout);
+    hipblasLtMatrixLayoutDestroy(plan.a_layout);
+    hipblasLtMatmulDescDestroy(plan.desc);
+    plan = HipblasltPlan{};
+}
+
+// Element compare on the device: bad = |got - ref| > atol + rtol*|ref|,
+// max_err tracked via the non-negative-float bit pattern (uint order == float
+// order for non-negative values).
+__global__ void blas_compare_kernel(const Bf16* __restrict__ got,
+                                    const Bf16* __restrict__ ref,
+                                    long long count,
+                                    float atol,
+                                    float rtol,
+                                    unsigned long long* bad,
+                                    unsigned int* max_bits)
+{
+    const long long i =
+        static_cast<long long>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if(i >= count)
+    {
+        return;
+    }
+    const float g = ck_tile::type_convert<float>(got[i]);
+    const float r = ck_tile::type_convert<float>(ref[i]);
+    const float d = fabsf(g - r);
+    if(d > atol + rtol * fabsf(r))
+    {
+        atomicAdd(bad, 1ull);
+    }
+    atomicMax(max_bits, __float_as_uint(d));
+}
+
+struct BlasCheckResult
+{
+    long long bad     = 0;
+    double max_err    = 0.0;
+};
+
+BlasCheckResult blas_compare(hipStream_t stream,
+                             const void* got,
+                             const void* ref,
+                             long long count)
+{
+    unsigned long long* bad_dev  = nullptr;
+    unsigned int* max_bits_dev   = nullptr;
+    hip_check(hipMalloc(&bad_dev, sizeof(*bad_dev)), "hipMalloc(bad)");
+    hip_check(hipMalloc(&max_bits_dev, sizeof(*max_bits_dev)), "hipMalloc(max)");
+    hip_check(hipMemset(bad_dev, 0, sizeof(*bad_dev)), "hipMemset(bad)");
+    hip_check(hipMemset(max_bits_dev, 0, sizeof(*max_bits_dev)), "hipMemset(max)");
+
+    const int block = 256;
+    const long long grid = (count + block - 1) / block;
+    blas_compare_kernel<<<static_cast<unsigned>(grid), block, 0, stream>>>(
+        static_cast<const Bf16*>(got),
+        static_cast<const Bf16*>(ref),
+        count,
+        1.0f,
+        0.01f,
+        bad_dev,
+        max_bits_dev);
+    hip_check(hipGetLastError(), "blas_compare_kernel launch");
+
+    unsigned long long bad = 0;
+    unsigned int max_bits  = 0;
+    hip_check(hipMemcpyAsync(&bad, bad_dev, sizeof(bad), hipMemcpyDeviceToHost, stream),
+              "hipMemcpyAsync(bad)");
+    hip_check(hipMemcpyAsync(&max_bits, max_bits_dev, sizeof(max_bits), hipMemcpyDeviceToHost, stream),
+              "hipMemcpyAsync(max)");
+    hip_check(hipStreamSynchronize(stream), "blas_compare sync");
+    hip_check(hipFree(bad_dev), "hipFree(bad)");
+    hip_check(hipFree(max_bits_dev), "hipFree(max)");
+
+    BlasCheckResult result;
+    result.bad = static_cast<long long>(bad);
+    // The bit pattern came back over memcpy: rebuild the non-negative float.
+    static_assert(sizeof(max_bits) == sizeof(float), "bit transfer size");
+    std::memcpy(&result.max_err, &max_bits, sizeof(result.max_err));
+    return result;
+}
+#endif   // CK_TILE_V7_TEST_HAS_HIPBLASLT
 
 struct DeviceCase
 {
@@ -710,7 +1183,181 @@ int main(int argc, char* argv[])
         }
     }
 
-    const double flops = 2.0 * static_cast<double>(c.m) * c.n * c.k * c.g;
+    // --- hipBLASLt functional reference (device-side, no CPU pass) ----------
+    if(options.hipblaslt_ref)
+    {
+#ifdef CK_TILE_V7_TEST_HAS_HIPBLASLT
+        hipblasLtHandle_t handle = nullptr;
+        hipblaslt_check_status(hipblasLtCreate(&handle), "hipblasLtCreate");
+        void* workspace                   = nullptr;
+        const std::size_t workspace_size  = 256ull << 20;
+        hip_check(hipMalloc(&workspace, workspace_size), "hipMalloc(blas workspace)");
+
+        std::vector<void*> ref_blocks(static_cast<std::size_t>(c.g), nullptr);
+        std::vector<HipblasltPlan> plans(static_cast<std::size_t>(c.g));
+        for(int g = 0; g < c.g; ++g)
+        {
+            const std::size_t bytes =
+                static_cast<std::size_t>(c.group_m[g]) * c.n * sizeof(Bf16);
+            hip_check(hipMalloc(&ref_blocks[g], bytes), "hipMalloc(blas ref)");
+            hip_check(hipMemset(ref_blocks[g], 0, bytes), "hipMemset(blas ref)");
+            if(!hipblaslt_make_plan(plans[g],
+                                    handle,
+                                    workspace,
+                                    workspace_size,
+                                    c.group_m[g],
+                                    c.n,
+                                    c.k,
+                                    c.strides_a[g],
+                                    c.tn))
+            {
+                std::fprintf(stderr, "hipBLASLt: no algorithm for group %d\n", g);
+                std::exit(1);
+            }
+            // One plain GEMM per group on the same stream the instance used.
+            hipblaslt_run_plan(plans[g],
+                               handle,
+                               workspace,
+                               workspace_size,
+                               stream,
+                               device.b_blocks[g],
+                               device.a_blocks[g],
+                               ref_blocks[g]);
+        }
+        hip_check(hipStreamSynchronize(stream), "hipblaslt ref sync");
+
+        long long blas_bad  = 0;
+        double blas_max_err = 0.0;
+        for(int g = 0; g < c.g; ++g)
+        {
+            const BlasCheckResult r =
+                blas_compare(stream,
+                             device.c_ptrs[g],
+                             ref_blocks[g],
+                             static_cast<long long>(c.group_m[g]) * c.n);
+            blas_bad += r.bad;
+            blas_max_err = blas_max_err > r.max_err ? blas_max_err : r.max_err;
+            hip_check(hipFree(ref_blocks[g]), "hipFree(blas ref)");
+        }
+        std::printf("blas_check layout=%s bad=%lld max_err=%.4f tolerance=1.0+0.01*|ref|\n",
+                    options.layout.c_str(),
+                    blas_bad,
+                    blas_max_err);
+        ok = ok && blas_bad == 0;
+        for(auto& plan : plans)
+        {
+            hipblaslt_destroy_plan(plan);
+        }
+        hip_check(hipFree(workspace), "hipFree(blas workspace)");
+        hipblasLtDestroy(handle);
+#else
+        std::printf("blas_check result=FAIL reason=built_without_hipblaslt\n");
+        ok = false;
+#endif
+    }
+
+    // --- hipBLASLt performance reference --------------------------------------
+    // Plans are built once per group; the timed loop issues bare
+    // hipblasLtMatmul calls for all groups per iteration -- the launch pattern a
+    // production consumer would use against the same buffers.
+    if(options.hipblaslt_perf)
+    {
+#ifdef CK_TILE_V7_TEST_HAS_HIPBLASLT
+        hipblasLtHandle_t handle = nullptr;
+        hipblaslt_check_status(hipblasLtCreate(&handle), "hipblasLtCreate");
+        void* workspace                  = nullptr;
+        const std::size_t workspace_size = 256ull << 20;
+        hip_check(hipMalloc(&workspace, workspace_size), "hipMalloc(blas workspace)");
+
+        std::vector<HipblasltPlan> plans(static_cast<std::size_t>(c.g));
+        bool plans_ok = true;
+        for(int g = 0; g < c.g && plans_ok; ++g)
+        {
+            plans_ok = hipblaslt_make_plan(plans[g],
+                                           handle,
+                                           workspace,
+                                           workspace_size,
+                                           c.group_m[g],
+                                           c.n,
+                                           c.k,
+                                           c.strides_a[g],
+                                           c.tn);
+        }
+        if(!plans_ok)
+        {
+            std::printf("blas_perf layout=%s result=FAIL reason=no_algo\n",
+                        options.layout.c_str());
+            ok = false;
+        }
+        else
+        {
+            for(int i = 0; i < options.warmup; ++i)
+            {
+                for(int g = 0; g < c.g; ++g)
+                {
+                    hipblaslt_run_plan(plans[g],
+                                       handle,
+                                       workspace,
+                                       workspace_size,
+                                       stream,
+                                       device.b_blocks[g],
+                                       device.a_blocks[g],
+                                       device.c_ptrs[g]);
+                }
+            }
+            hipEvent_t start{};
+            hipEvent_t stop{};
+            hip_check(hipEventCreate(&start), "hipEventCreate");
+            hip_check(hipEventCreate(&stop), "hipEventCreate");
+            hip_check(hipEventRecord(start, stream), "hipEventRecord");
+            for(int i = 0; i < options.iters; ++i)
+            {
+                for(int g = 0; g < c.g; ++g)
+                {
+                    hipblaslt_run_plan(plans[g],
+                                       handle,
+                                       workspace,
+                                       workspace_size,
+                                       stream,
+                                       device.b_blocks[g],
+                                       device.a_blocks[g],
+                                       device.c_ptrs[g]);
+                }
+            }
+            hip_check(hipEventRecord(stop, stream), "hipEventRecord");
+            hip_check(hipEventSynchronize(stop), "hipEventSynchronize");
+            float elapsed_ms = 0.0f;
+            hip_check(hipEventElapsedTime(&elapsed_ms, start, stop), "hipEventElapsedTime");
+            const double blas_ms =
+                static_cast<double>(elapsed_ms) / static_cast<double>(options.iters);
+            const double blas_tf =
+                2.0 * static_cast<double>(c.total_m) * c.n * c.k /
+                (blas_ms * 1.0e-3) / 1.0e12;
+            std::printf("blas_perf layout=%s m=%d n=%d k=%d groups=%d "
+                        "blas_ms=%.4f blas_tf=%.1f\n",
+                        options.layout.c_str(),
+                        c.m,
+                        c.n,
+                        c.k,
+                        c.g,
+                        blas_ms,
+                        blas_tf);
+            hip_check(hipEventDestroy(start), "hipEventDestroy");
+            hip_check(hipEventDestroy(stop), "hipEventDestroy");
+        }
+        for(auto& plan : plans)
+        {
+            hipblaslt_destroy_plan(plan);
+        }
+        hip_check(hipFree(workspace), "hipFree(blas workspace)");
+        hipblasLtDestroy(handle);
+#else
+        std::printf("blas_perf result=FAIL reason=built_without_hipblaslt\n");
+        ok = false;
+#endif
+    }
+
+    const double flops = 2.0 * static_cast<double>(c.total_m) * c.n * c.k;
     std::printf("perf   layout=%s m=%d n=%d k=%d groups=%d v7_ms=%.4f v7_tf=%.1f\n",
                 options.layout.c_str(),
                 c.m,

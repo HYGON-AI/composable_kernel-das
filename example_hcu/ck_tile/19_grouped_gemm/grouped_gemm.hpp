@@ -23,6 +23,7 @@
 #include "ck_tile/ops/gemm/pipeline/gemm_pipeline_ag_bg_cr_comp_v3_bw_family_operand.hpp"
 #include "ck_tile/ops/gemm/pipeline/gemm_pipeline_ag_bg_cr_comp_v4.hpp"
 #include "ck_tile/ops/gemm/pipeline/gemm_pipeline_ag_bg_cr_mls.hpp"
+#include "ck_tile/ops/gemm/pipeline/gemm_pipeline_ag_bg_cr_wasp.hpp"
 
 // #include "ck_tile/ops/gemm/pipeline/wp_pipeline_agmem_bgmem_creg_v2.hpp"
 #include "ck_tile/ops/gemm/kernel/grouped_gemm_kernel.hpp"
@@ -46,6 +47,7 @@
 // and the config carries the layout that the host-side selector gated on.
 #define CK_TILE_PIPELINE_COMPUTE_V7 12
 #define CK_TILE_PIPELINE_COMPUTE_V8 13
+#define CK_TILE_PIPELINE_COMPUTE_WASP 14
 
 #ifndef CK_TILE_PIPELINE_DEFAULT
 #define CK_TILE_PIPELINE_DEFAULT CK_TILE_PIPELINE_COMPUTE_V3
@@ -431,6 +433,38 @@ struct GemmConfigComputeV3RegPrefetch256 : public GemmConfigBase
     static constexpr bool SupportsFastRowMajorB    = false;
     static constexpr bool SupportsFastColumnMajorA = false;
     static constexpr ck_tile::index_t Pipeline = CK_TILE_PIPELINE_COMPUTE_V3;
+    static constexpr int kBlockPerCu = 1;
+};
+
+// Explicitly selected gfx936 BF16 NT warp-specialized path. The tile warp grid
+// describes the eight consumer waves; the Wasp pipeline contributes four
+// producer waves to the 12-wave workgroup.
+template <typename PrecType>
+struct GemmConfigWasp256 : public GemmConfigBase
+{
+    static_assert(std::is_same_v<PrecType, ck_tile::bf16_t>,
+                  "The Wasp NT pipeline currently supports BF16 only");
+
+    static constexpr ck_tile::index_t M_Tile = 256;
+    static constexpr ck_tile::index_t N_Tile = 256;
+    static constexpr ck_tile::index_t K_Tile = 64;
+
+    static constexpr ck_tile::index_t M_Warp = 1;
+    static constexpr ck_tile::index_t N_Warp = 8;
+    static constexpr ck_tile::index_t K_Warp = 1;
+
+    static constexpr ck_tile::index_t M_Warp_Tile = 16;
+    static constexpr ck_tile::index_t N_Warp_Tile = 16;
+    static constexpr ck_tile::index_t K_Warp_Tile = 16;
+
+    static constexpr bool kPadM = true;
+    static constexpr bool kPadN = false;
+    static constexpr bool kPadK = false;
+    static constexpr bool Persistent = true;
+    static constexpr bool DoubleSmemBuffer = false;
+    static constexpr bool SupportsFastRowMajorB = false;
+    static constexpr bool SupportsFastColumnMajorA = false;
+    static constexpr ck_tile::index_t Pipeline = CK_TILE_PIPELINE_COMPUTE_WASP;
     static constexpr int kBlockPerCu = 1;
 };
 
@@ -2149,6 +2183,15 @@ struct PipelineTypeTraits<CK_TILE_PIPELINE_COMPUTE_V8>
         ck_tile::GemmPipelineV7Uniform<PipelineProblem, ck_tile::V7UniformKind::TN>;
 };
 
+template <>
+struct PipelineTypeTraits<CK_TILE_PIPELINE_COMPUTE_WASP>
+{
+    template <typename PipelineProblem>
+    using GemmPipeline = ck_tile::GemmPipelineAgBgCrWasp<PipelineProblem>;
+    template <typename PipelineProblem>
+    using UniversalGemmPipeline = ck_tile::BaseGemmPipelineAgBgCrCompV3<PipelineProblem>;
+};
+
 template <typename PrecType>
 struct GemmConfigComputeInt4 : public GemmConfigBase
 {
@@ -2659,4 +2702,5 @@ float grouped_gemm_tileloop(const ck_tile::stream_config& s,
                             void* kargs_ptr,
                             const std::vector<std::pair<void*, std::size_t>>& output_resets,
                             bool splitk = false,
-                            std::uint32_t requested_num_cu = 0);
+                            std::uint32_t requested_num_cu = 0,
+                            ck_tile::index_t flat_grid_size = 0);
