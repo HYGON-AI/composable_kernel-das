@@ -379,13 +379,6 @@ struct GroupedGemmWaspStoreEpilogue
         {
             return;   // producer waves own no output
         }
-        if((ck_tile::wasp_detail::wasp_ablate() & 16) != 0)
-        {
-            // Ablation (see gemm_pipeline_ag_bg_cr_wasp.hpp): run the whole GEMM
-            // but throw the writeback away, so the epilogue's cost can be timed
-            // on its own.
-            return;
-        }
         // Only used by the DEBUG_RECORD block below; store_raw recomputes its
         // own. Keep for that diagnostic without tripping -Wunused otherwise.
         [[maybe_unused]] const ck_tile::index_t consumer_id =
@@ -449,7 +442,7 @@ struct GroupedGemmWaspStoreEpilogue
     // RunGemmWasp path calls this directly with kargs-derived scalars, so no
     // output tile-window object is built or kept live.
     //
-    // The role filter and the ablation gate live HERE (not only in the window
+    // The role filter lives HERE (not only in the window
     // operator() above): RunGemmWasp calls store_raw directly on EVERY wave of
     // the workgroup, so producer waves (wid < kNumProducerWaves) must be dropped
     // here, exactly as the window path drops them before extracting the window.
@@ -468,10 +461,6 @@ struct GroupedGemmWaspStoreEpilogue
         if(wid < Pipeline::kNumProducerWaves)
         {
             return;   // producer waves own no output
-        }
-        if((ck_tile::wasp_detail::wasp_ablate() & 16) != 0)
-        {
-            return;   // ablation: run the GEMM but throw the writeback away
         }
         const ck_tile::index_t consumer_id = wid - Pipeline::kNumProducerWaves;
         const ck_tile::index_t lane        = ck_tile::get_lane_id();

@@ -71,20 +71,16 @@
 // -----------------------------------------------------------------------------
 // THE 1/4-PHASE STAGGER (the standalone kernel's C / C' personas).
 //
-// WHAT IT IS. Both consumer bodies execute the same items per k-stage, but C'
-// issues them rotated by ONE ITEM: C pairs each read with its MMAC inside one
-// interval, C' lets one read cross each barrier and consumes it at the top of
-// the next interval. In items (one item = one 8-unit m-chunk = 32 MMACs):
+// Each k-stage has four quarters. Consumer waves 0..3 execute
+// Q0(wait B, read A.h0, drain LDS), Q1(MMAC A.h0), BAR,
+// Q2(read half A.h1, prefetch B(k+1), read half A.h1, drain LDS),
+// Q3(MMAC A.h1), BAR. Consumer waves 4..7 rotate Q3 from the previous stage
+// ahead of Q0, then execute Q0, BAR, Q1, Q2, BAR. The first stage has no
+// carried Q3; the last carried Q3 is drained after the loop. The producer issues
+// A(k+1) before the first barrier and waits for its DMA between the two barriers,
+// publishing the completed stage at the second barrier.
 //
-//   C  I1 = [R c0 M c0  R c1 M c1]      C  I2 = [R c2 M c2  R c3 M c3]
-//   C' I1 = [M c3(prev) R c0 M c0 R c1] C' I2 = [M c1 R c2 M c2 R c3]
-//
-// with a k-stage split into two intervals by BAR(k).mid, and c0/c1 the h0 chunks,
-// c2/c3 the h1 chunks. C leads an interval with its ds_reads (LDS busy) while C'
-// leads with its MMACs (matrix busy), and they swap at the tail. This is the
-// same shape as the reference kernel's stage_body_C / stage_body_Cp; the
-// granularity is one m-chunk instead of one K-half because the fragment has to
-// fit (see below).
+// Older chunk-level cadence measurements below predate this Q0-Q3 ordering.
 //
 // MEASURED, this shape, two cadences:
 //
@@ -103,13 +99,8 @@
 // configuration that loses; every uniform body is better than any mix, and the
 // loss is not codegen (the spill is 16 / 52 B in all three (b) rows).
 //
-// The mechanism is the rendezvous: a barrier releases when the SLOWEST wave
-// arrives, and the two personas have different interval costs (C drains in
-// place twice per interval, C' gets one cheap drain and one free one), so the
-// workgroup runs at C's pace while C' idles -- and the LDS queue interleaving of
-// two out-of-phase read streams makes both of them slower than either uniform
-// stream. There is no phase offset to be had once a hard sync re-times every
-// wave twice a stage.
+// Those earlier measurements used a different schedule and are retained as
+// historical results; they do not describe the Q0-Q3 pipeline below.
 //
 // THE REGISTER SIDE of the same experiment: the reference kernel keeps a whole
 // K-half fragment (64 VGPR) live across the barrier. Here that lands on the
@@ -194,32 +185,6 @@ static_assert(sizeof(stage16_t) == 16, "16 B staging unit");
 // per m-iteration, 32 VALU per k-stage per consumer wave -- and on this part a
 // VALU and an MMAC from different waves on the same SIMD cannot issue in the
 // same cycle. Use the pipeline's a_read_half (one base VGPR + immediates).
-
-#if defined(CK_TILE_GROUPED_GEMM_WASP_ABLATION)
-// ---------------------------------------------------------------------------
-// Ablation switch, set from the host with hipMemcpyToSymbol. Results are WRONG
-// by construction -- the only thing being measured is the timing decomposition,
-// because three separate hypotheses about where this kernel's time goes were
-// each falsified by measurement and modelling is clearly not working.
-//
-// bit 0 : skip the B global loads
-// bit 1 : skip the MMACs
-// bit 2 : read every A fragment from row 0's address (same LDS traffic count,
-//         degenerate address pattern -- isolates "16 distinct addresses" from
-//         "the reads themselves")
-// bit 3 : skip the workgroup barriers
-// ---------------------------------------------------------------------------
-__device__ static int g_wasp_ablate = 0;
-#endif
-
-CK_TILE_DEVICE int wasp_ablate()
-{
-#if defined(CK_TILE_GROUPED_GEMM_WASP_ABLATION)
-    return g_wasp_ablate;
-#else
-    return 0;
-#endif
-}
 
 CK_TILE_DEVICE void ds_write_b128(uint32_t byte_addr, const dword4_t& v)
 {
@@ -400,14 +365,9 @@ CK_TILE_DEVICE dword4_t wasp_buffer_load_b128_idxen(buffer_rsrc_t rsrc,
 // Bare workgroup barrier -- the reference kernel's wait_all_warp_arrived()
 // verbatim: sched_barrier(0), s_barrier, sched_barrier(0).
 //
-// NO LDS DRAIN. This is load bearing for the k-stage cadence: the C' persona
-// issues its A(k,1) read at the very end of an interval and consumes it on the
-// far side of the barrier. A draining barrier (s_waitcnt lgkmcnt(0) + s_barrier)
-// forces that read to complete before ANY wave may pass, which is exactly the
-// serialisation the 1/4-phase offset exists to remove -- and it also puts every
-// wave's LDS latency on the critical path to the barrier. Each consumer waits
-// for its own A data explicitly (the waits inside Q1/Q3), so nothing is lost by
-// not draining here.
+// NO LDS DRAIN. Q0 and Q2 drain their own A reads before the corresponding
+// MMACs, so the barrier need not force every wave's LDS queue to drain before
+// any wave may pass.
 //
 // The sched_barrier pair is the reference kernel's, not decoration: it stops the
 // machine scheduler from hoisting a read across the barrier (which would break
@@ -421,10 +381,7 @@ CK_TILE_DEVICE void wasp_barrier()
 
 CK_TILE_DEVICE void wasp_barrier_maybe()
 {
-    if((wasp_ablate() & 8) == 0)
-    {
-        wasp_barrier();
-    }
+    wasp_barrier();
 }
 
 CK_TILE_DEVICE void wasp_sync_lds()
@@ -433,8 +390,8 @@ CK_TILE_DEVICE void wasp_sync_lds()
     //
     // An earlier revision also drained vmcnt(0) on the theory that the A stage
     // (written with ds_write, an LDS-unit store) might be ordered by the global
-    // counter. The ablation disproves the cost model behind that: the barriers
-    // are ~20% of the runtime, and vmcnt(0) makes every wave -- including the 8
+    // counter. Timing decomposition showed that the barriers are ~20% of the
+    // runtime, and vmcnt(0) makes every wave -- including the 8
     // consumers, whose global loads are its own B operands and have nothing to
     // do with publishing A -- stall on its own outstanding global traffic at
     // each of the num_loop barriers. The producer's A writes are LDS stores and
@@ -442,14 +399,9 @@ CK_TILE_DEVICE void wasp_sync_lds()
     asm volatile("s_waitcnt lgkmcnt(0)\n\ts_barrier\n" ::: "memory");
 }
 
-// Barrier with the ablation bit honored (see wasp_ablate). Uniform branch, so
-// it costs one scalar compare when the ablation is off.
 CK_TILE_DEVICE void wasp_sync_lds_maybe()
 {
-    if((wasp_ablate() & 8) == 0)
-    {
-        wasp_sync_lds();
-    }
+    wasp_sync_lds();
 }
 
 // Retire outstanding direct-to-LDS DMAs (vmcnt). The producer calls this before
@@ -667,8 +619,8 @@ struct GemmPipelineAgBgCrWasp : public GemmPipelineAgBgCrCompV3<Problem, Policy>
 
     // a_base and lda are per-TILE, not per k-stage, so they are passed in rather
     // than re-derived here. The first version called calculate_offset on every
-    // one of the num_loop calls -- 64 times per tile per wave -- and the ablation
-    // says this kernel's time is dominated by exactly that kind of scalar
+    // one of the num_loop calls -- 64 times per tile per wave -- and timing
+    // decomposition showed this kernel's time is dominated by exactly that kind of scalar
     // bookkeeping, not by the MMACs (removing every MMAC saves ~10%).
     template <typename ADataTypePtr>
     CK_TILE_DEVICE AProdSrc make_a_prod_src(const ADataTypePtr* a_base,
@@ -738,11 +690,6 @@ struct GemmPipelineAgBgCrWasp : public GemmPipelineAgBgCrCompV3<Problem, Policy>
     CK_TILE_DEVICE void producer_fill(const AProdSrc& src, index_t k_stage, index_t wid) const
     {
         using namespace wasp_detail;
-
-        if((wasp_ablate() & 64) != 0)
-        {
-            return;   // ablation: idle producer (see wasp_ablate)
-        }
 
         const index_t slot = (k_stage % kNumStages) * kAStageBytes;
 
@@ -818,14 +765,6 @@ struct GemmPipelineAgBgCrWasp : public GemmPipelineAgBgCrCompV3<Problem, Policy>
     {
         using namespace wasp_detail;
         const uint32_t s_col_base = static_cast<uint32_t>(k_stage * kStageK) * sizeof(uint16_t);
-        if((wasp_ablate() & 1) != 0)
-        {
-            buf[0][0].d4 = 0;
-            buf[1][0].d4 = 0;
-            buf[0][1].d4 = 0;
-            buf[1][1].d4 = 0;
-            return;
-        }
         // Destination order is the reference kernel's: (n0,kh0) (n0,kh1)
         // (n1,kh0) (n1,kh1) -- buf[kh][n], the immediate 0/64 choosing the half.
         wasp_buffer_load_b128_x4_idxen_soff2(b_rsrc, bp.p0, bp.p1, s_col_base,
@@ -854,13 +793,12 @@ struct GemmPipelineAgBgCrWasp : public GemmPipelineAgBgCrCompV3<Problem, Policy>
     // The A fragment is ONE WHOLE K-HALF: 16 x 16 B per lane = 64 VGPR, read with
     // ONE base register plus compile-time immediates, and consumed by ONE
     // 64-MMAC burst. This is the standalone kernel's shape AND grouping
-    // (ds_read_a_half + mmac_half), and the k-stage body around it is unchanged:
-    // two intervals per stage, one 16-unit read burst and one 64-MMAC burst in
-    // each, in opposite order for the two consumer personas. See c_I1/c_I2 (C)
-    // and cp_I1/cp_I2 (C').
+    // (ds_read_a_half + mmac_half). Each stage still has two 16-read / 64-MMAC
+    // pairs; the second read is split into two 8-read issues around B prefetch.
+    // The C and C' functions below place those pairs in their staggered quarters.
     // ------------------------------------------------------------------
 
-    // 16 consecutive ds_read_b128 off ONE base VGPR, with the m-iteration row
+    // 8 consecutive ds_read_b128 off ONE base VGPR, with the m-iteration row
     // offsets (16 rows x 128 B = 0x800) AND the 2-deep A ring slot as
     // compile-time immediates. 32768 + 30720 = 63488 fits the 16-bit unsigned
     // offset field.
@@ -899,68 +837,67 @@ struct GemmPipelineAgBgCrWasp : public GemmPipelineAgBgCrCompV3<Problem, Policy>
     // bf16_gemm_nt_hipc.cpp:1247 and :1281-1300).
     template <index_t SLOT>
     CK_TILE_DEVICE static void
-    ds_read_b128_x16_imm(uint32_t base,
-                         wasp_detail::dword4_t& o0,  wasp_detail::dword4_t& o1,  wasp_detail::dword4_t& o2,  wasp_detail::dword4_t& o3,
-                         wasp_detail::dword4_t& o4,  wasp_detail::dword4_t& o5,  wasp_detail::dword4_t& o6,  wasp_detail::dword4_t& o7,
-                         wasp_detail::dword4_t& o8,  wasp_detail::dword4_t& o9,  wasp_detail::dword4_t& o10, wasp_detail::dword4_t& o11,
-                         wasp_detail::dword4_t& o12, wasp_detail::dword4_t& o13, wasp_detail::dword4_t& o14, wasp_detail::dword4_t& o15)
+    ds_read_b128_x8_imm(uint32_t base,
+                        wasp_detail::dword4_t& o0,
+                        wasp_detail::dword4_t& o1,
+                        wasp_detail::dword4_t& o2,
+                        wasp_detail::dword4_t& o3,
+                        wasp_detail::dword4_t& o4,
+                        wasp_detail::dword4_t& o5,
+                        wasp_detail::dword4_t& o6,
+                        wasp_detail::dword4_t& o7)
     {
-        static_assert(SLOT + 30720 <= 65535,
+        static_assert(SLOT + 14336 <= 65535,
                       "ds_read_b128 imm offset overflows the 16-bit unsigned field");
-        asm volatile("ds_read_b128 %0,  %16 offset:%c17\n\t"
-                     "ds_read_b128 %1,  %16 offset:%c18\n\t"
-                     "ds_read_b128 %2,  %16 offset:%c19\n\t"
-                     "ds_read_b128 %3,  %16 offset:%c20\n\t"
-                     "ds_read_b128 %4,  %16 offset:%c21\n\t"
-                     "ds_read_b128 %5,  %16 offset:%c22\n\t"
-                     "ds_read_b128 %6,  %16 offset:%c23\n\t"
-                     "ds_read_b128 %7,  %16 offset:%c24\n\t"
-                     "ds_read_b128 %8,  %16 offset:%c25\n\t"
-                     "ds_read_b128 %9,  %16 offset:%c26\n\t"
-                     "ds_read_b128 %10, %16 offset:%c27\n\t"
-                     "ds_read_b128 %11, %16 offset:%c28\n\t"
-                     "ds_read_b128 %12, %16 offset:%c29\n\t"
-                     "ds_read_b128 %13, %16 offset:%c30\n\t"
-                     "ds_read_b128 %14, %16 offset:%c31\n\t"
-                     "ds_read_b128 %15, %16 offset:%c32\n"
-                     : "=&v"(o0),  "=&v"(o1),  "=&v"(o2),  "=&v"(o3),
-                       "=&v"(o4),  "=&v"(o5),  "=&v"(o6),  "=&v"(o7),
-                       "=&v"(o8),  "=&v"(o9),  "=&v"(o10), "=&v"(o11),
-                       "=&v"(o12), "=&v"(o13), "=&v"(o14), "=&v"(o15)
+        asm volatile("ds_read_b128 %0, %8 offset:%c9\n\t"
+                     "ds_read_b128 %1, %8 offset:%c10\n\t"
+                     "ds_read_b128 %2, %8 offset:%c11\n\t"
+                     "ds_read_b128 %3, %8 offset:%c12\n\t"
+                     "ds_read_b128 %4, %8 offset:%c13\n\t"
+                     "ds_read_b128 %5, %8 offset:%c14\n\t"
+                     "ds_read_b128 %6, %8 offset:%c15\n\t"
+                     "ds_read_b128 %7, %8 offset:%c16\n"
+                     : "=&v"(o0), "=&v"(o1), "=&v"(o2), "=&v"(o3),
+                       "=&v"(o4), "=&v"(o5), "=&v"(o6), "=&v"(o7)
                      : "v"(base),
-                       "n"(SLOT + 0),     "n"(SLOT + 2048),  "n"(SLOT + 4096),  "n"(SLOT + 6144),
-                       "n"(SLOT + 8192),  "n"(SLOT + 10240), "n"(SLOT + 12288), "n"(SLOT + 14336),
-                       "n"(SLOT + 16384), "n"(SLOT + 18432), "n"(SLOT + 20480), "n"(SLOT + 22528),
-                       "n"(SLOT + 24576), "n"(SLOT + 26624), "n"(SLOT + 28672), "n"(SLOT + 30720)
+                       "n"(SLOT + 0),     "n"(SLOT + 2048),  "n"(SLOT + 4096),
+                       "n"(SLOT + 6144),  "n"(SLOT + 8192),  "n"(SLOT + 10240),
+                       "n"(SLOT + 12288), "n"(SLOT + 14336)
                      : "memory");
     }
 
-    // One K-half of the 256M x K16 A operand for the whole wave tile. SLOT is
-    // the A-ring slot ((k_stage % 2) * kAStageBytes), which the k loop unrolled
-    // by parity makes compile-time.
+    // Read one eight-register half of a K-half. Splitting at the B prefetch
+    // lets Q2 overlap the load with LDS reads without changing their addresses.
     template <index_t SLOT, bool H1>
-    CK_TILE_DEVICE void
-    a_read_half(const AReadBases& b,
-                wasp_detail::stage16_t (&a_regs)[WaspAccTile::kMIters]) const
+    CK_TILE_DEVICE void a_read_half_low(
+        const AReadBases& b,
+        wasp_detail::stage16_t (&a_regs)[WaspAccTile::kMIters]) const
     {
-        ds_read_b128_x16_imm<SLOT>(H1 ? b.h1 : b.h0,
-                                   reinterpret_cast<wasp_detail::dword4_t&>(a_regs[0]),
-                                   reinterpret_cast<wasp_detail::dword4_t&>(a_regs[1]),
-                                   reinterpret_cast<wasp_detail::dword4_t&>(a_regs[2]),
-                                   reinterpret_cast<wasp_detail::dword4_t&>(a_regs[3]),
-                                   reinterpret_cast<wasp_detail::dword4_t&>(a_regs[4]),
-                                   reinterpret_cast<wasp_detail::dword4_t&>(a_regs[5]),
-                                   reinterpret_cast<wasp_detail::dword4_t&>(a_regs[6]),
-                                   reinterpret_cast<wasp_detail::dword4_t&>(a_regs[7]),
-                                   reinterpret_cast<wasp_detail::dword4_t&>(a_regs[8]),
-                                   reinterpret_cast<wasp_detail::dword4_t&>(a_regs[9]),
-                                   reinterpret_cast<wasp_detail::dword4_t&>(a_regs[10]),
-                                   reinterpret_cast<wasp_detail::dword4_t&>(a_regs[11]),
-                                   reinterpret_cast<wasp_detail::dword4_t&>(a_regs[12]),
-                                   reinterpret_cast<wasp_detail::dword4_t&>(a_regs[13]),
-                                   reinterpret_cast<wasp_detail::dword4_t&>(a_regs[14]),
-                                   reinterpret_cast<wasp_detail::dword4_t&>(a_regs[15]));
+        ds_read_b128_x8_imm<SLOT>(H1 ? b.h1 : b.h0,
+                                  reinterpret_cast<wasp_detail::dword4_t&>(a_regs[0]),
+                                  reinterpret_cast<wasp_detail::dword4_t&>(a_regs[1]),
+                                  reinterpret_cast<wasp_detail::dword4_t&>(a_regs[2]),
+                                  reinterpret_cast<wasp_detail::dword4_t&>(a_regs[3]),
+                                  reinterpret_cast<wasp_detail::dword4_t&>(a_regs[4]),
+                                  reinterpret_cast<wasp_detail::dword4_t&>(a_regs[5]),
+                                  reinterpret_cast<wasp_detail::dword4_t&>(a_regs[6]),
+                                  reinterpret_cast<wasp_detail::dword4_t&>(a_regs[7]));
+    }
 
+    template <index_t SLOT, bool H1>
+    CK_TILE_DEVICE void a_read_half_high(
+        const AReadBases& b,
+        wasp_detail::stage16_t (&a_regs)[WaspAccTile::kMIters]) const
+    {
+        ds_read_b128_x8_imm<SLOT + 16384>(H1 ? b.h1 : b.h0,
+                                          reinterpret_cast<wasp_detail::dword4_t&>(a_regs[8]),
+                                          reinterpret_cast<wasp_detail::dword4_t&>(a_regs[9]),
+                                          reinterpret_cast<wasp_detail::dword4_t&>(a_regs[10]),
+                                          reinterpret_cast<wasp_detail::dword4_t&>(a_regs[11]),
+                                          reinterpret_cast<wasp_detail::dword4_t&>(a_regs[12]),
+                                          reinterpret_cast<wasp_detail::dword4_t&>(a_regs[13]),
+                                          reinterpret_cast<wasp_detail::dword4_t&>(a_regs[14]),
+                                          reinterpret_cast<wasp_detail::dword4_t&>(a_regs[15]));
     }
 
     // 64 MMACs for one K-half: kk(2) x m(16) x n(2). The standalone kernel's
@@ -981,24 +918,11 @@ struct GemmPipelineAgBgCrWasp : public GemmPipelineAgBgCrCompV3<Problem, Policy>
     // the single drain. The LDS queue is shared with the other seven consumers,
     // so "wait for my first four reads" does not return any sooner; it just
     // takes two stalls instead of one.
-    // The Q1 drain -- the reference kernel's `wait lgkmcnt(0); wait vmcnt(0)`:
-    // lgkmcnt for A's LDS read, vmcnt for the B prefetch that Q1's MMACs consume.
-    CK_TILE_DEVICE void wasp_wait_q1(wasp_detail::WaspVmemDiag& vmem_diag,
-                                     index_t stage) const
-    {
-        asm volatile("s_waitcnt lgkmcnt(0)\n" ::: "memory");
-        wasp_detail::wasp_wait_vmcnt0(vmem_diag, stage);
-    }
-
     CK_TILE_DEVICE void mmac_half(const wasp_detail::stage16_t (&a_regs)[WaspAccTile::kMIters],
                                   const wasp_detail::stage16_t (&b_half)[WaspAccTile::kNIters],
                                   AccTile& acc) const
     {
         using namespace wasp_detail;
-        if((wasp_ablate() & 2) != 0)
-        {
-            return;   // ablation: skip MMACs
-        }
         // The reference kernel peels the first MMAC out of the chain so that
         // set_prio<3> can be raised AFTER one has issued and set_prio<0> dropped
         // after the very last, with no per-iteration branch in the chain.
@@ -1040,9 +964,7 @@ struct GemmPipelineAgBgCrWasp : public GemmPipelineAgBgCrCompV3<Problem, Policy>
     }
 
     // ------------------------------------------------------------------
-    // PERSONA C's k-stage: (Q0,Q1) | BAR k.mid | (Q2,Q3) | BAR k.end.
-    // Every read is drained inside the interval that issued it, so every A slot
-    // is provably dead a full stage before the producer refills it.
+    // PERSONA C: Q0, Q1 | BAR | Q2, Q3 | BAR.
     // ------------------------------------------------------------------
     template <index_t CUR>
     CK_TILE_DEVICE void c_I1(index_t consumer_id,
@@ -1056,22 +978,15 @@ struct GemmPipelineAgBgCrWasp : public GemmPipelineAgBgCrCompV3<Problem, Policy>
     {
         using namespace wasp_detail;
         (void)consumer_id;
-        (void)k_stage;
         (void)num_loop;
         constexpr index_t SLOT = CUR * kAStageBytes;
-        // This interval issues no B prefetch and no stage-dependent addressing,
-        // but keeps the same signature as its I2 sibling by design.
-        (void)k_stage;
-        (void)num_loop;
-        if((wasp_ablate() & 32) != 0)
-        {
-            return;   // ablation: idle consumer
-        }
-        // Q0: A(k, h0).
-        a_read_half<SLOT, false>(a_rb, a_regs);
-        // Q1: A(h0) landed (lgkmcnt) + B(k) landed (vmcnt) -- B(k) was prefetched
-        // in the previous stage and B(k+1) has not been issued yet.
-        wasp_wait_q1(vmem_diag, k_stage);
+        // Q0: B(k) is ready before the A reads; drain those LDS reads before Q1.
+        wasp_detail::wasp_wait_vmcnt0(vmem_diag, k_stage);
+        a_read_half_low<SLOT, false>(a_rb, a_regs);
+        a_read_half_high<SLOT, false>(a_rb, a_regs);
+        asm volatile("s_waitcnt lgkmcnt(0)\n" ::: "memory");
+
+        // Q1: 64 MMACs.
         mmac_half(a_regs, b_regs[CUR][0], acc);
     }
 
@@ -1090,35 +1005,22 @@ struct GemmPipelineAgBgCrWasp : public GemmPipelineAgBgCrCompV3<Problem, Policy>
         using namespace wasp_detail;
         constexpr index_t SLOT = CUR * kAStageBytes;
         (void)consumer_id;
-        if((wasp_ablate() & 32) != 0)
-        {
-            return;   // ablation: idle consumer
-        }
-        // Q2: issue the B prefetch -- 4 x buffer_load_dwordx4 in ONE asm block,
-        // the reference kernel's form (two IDXEN pairs, k-half on the immediate,
-        // the stage's K column on the uniform SGPR soffset) -- and read A(k, h1).
-        //
-        // The MMACs of the next interval consume these bytes, so the Q1 drain
-        // below is the reference kernel's `lgkmcnt(0); vmcnt(0)`.
+        // Q2: overlap the next B prefetch with the two halves of A(k, h1).
+        a_read_half_low<SLOT, true>(a_rb, a_regs);
         if(k_stage + 1 < num_loop)
         {
             load_B_stage(b_rsrc, b_pairs, k_stage + 1, b_regs[CUR ^ 1], vmem_diag);
         }
-        a_read_half<SLOT, true>(a_rb, a_regs);
-        // Q3: A(h1) landed. B(k)'s second half is resident, so NO vmcnt here --
-        // draining it would stall on the B(k+1) prefetch just issued.
+        a_read_half_high<SLOT, true>(a_rb, a_regs);
         asm volatile("s_waitcnt lgkmcnt(0)\n" ::: "memory");
+
+        // Q3: 64 MMACs.
         mmac_half(a_regs, b_regs[CUR][1], acc);
     }
 
     // ------------------------------------------------------------------
-    // PERSONA C's k-stage, rotated by ONE QUARTER:
-    // (Q3 of k-1, Q0) | BAR k.mid | (Q1, Q2) | BAR k.end.
-    //
-    // What crosses a barrier is the MMAC and the A fragment registers it
-    // consumes. Each interval carries the same work as C's (one 16-unit read, one
-    // 64-MMAC burst, one real drain): a rendezvous releases when the SLOWEST wave
-    // arrives, so a heavier persona would just be paid for by the other half.
+    // PERSONA C' starts each stage with the previous stage's Q3, then executes
+    // Q0 | BAR | Q1, Q2 | BAR.
     // ------------------------------------------------------------------
     template <index_t CUR, bool IS_FIRST>
     CK_TILE_DEVICE void cp_I1(index_t consumer_id,
@@ -1127,31 +1029,23 @@ struct GemmPipelineAgBgCrWasp : public GemmPipelineAgBgCrCompV3<Problem, Policy>
                               const AReadBases& a_rb,
                               wasp_detail::stage16_t (&b_regs)[2][2][WaspAccTile::kNIters],
                               wasp_detail::stage16_t (&a_regs)[WaspAccTile::kMIters],
+                              wasp_detail::WaspVmemDiag& vmem_diag,
                               AccTile& acc) const
     {
         using namespace wasp_detail;
         (void)consumer_id;
-        (void)k_stage;
         (void)num_loop;
         constexpr index_t SLOT = CUR * kAStageBytes;
-        (void)k_stage;
-        (void)num_loop;
-        if((wasp_ablate() & 32) != 0)
-        {
-            return;   // ablation: idle consumer
-        }
         if constexpr(!IS_FIRST)
         {
-            // Q3 of the PREVIOUS stage: the quarter that crosses the barrier.
-            // Its data was read at the end of the previous stage and is drained
-            // HERE, so the wait is for a read issued a whole barrier ago -- that
-            // is what the deferral buys. B(k-1) is still resident (its buffer is
-            // CUR^1 here), which is why cp_I2's prefetch must not move earlier.
-            asm volatile("s_waitcnt lgkmcnt(0)\n" ::: "memory");
+            // Q3 of the previous stage; its A reads were drained in that Q2.
             mmac_half(a_regs, b_regs[CUR ^ 1][1], acc);
         }
-        // Q0: A(k, h0).
-        a_read_half<SLOT, false>(a_rb, a_regs);
+        // Q0: B(k) is ready before the A reads; drain those reads before Q1.
+        wasp_detail::wasp_wait_vmcnt0(vmem_diag, k_stage);
+        a_read_half_low<SLOT, false>(a_rb, a_regs);
+        a_read_half_high<SLOT, false>(a_rb, a_regs);
+        asm volatile("s_waitcnt lgkmcnt(0)\n" ::: "memory");
     }
 
     template <index_t CUR>
@@ -1159,35 +1053,27 @@ struct GemmPipelineAgBgCrWasp : public GemmPipelineAgBgCrCompV3<Problem, Policy>
                               index_t k_stage,
                               index_t num_loop,
                               const AReadBases& a_rb,
-                               wasp_detail::buffer_rsrc_t b_rsrc,
+                              wasp_detail::buffer_rsrc_t b_rsrc,
                               const BPairs& b_pairs,
                               wasp_detail::stage16_t (&b_regs)[2][2][WaspAccTile::kNIters],
                               wasp_detail::stage16_t (&a_regs)[WaspAccTile::kMIters],
-                               wasp_detail::WaspVmemDiag& vmem_diag,
-                               AccTile& acc) const
+                              wasp_detail::WaspVmemDiag& vmem_diag,
+                              AccTile& acc) const
     {
         using namespace wasp_detail;
         constexpr index_t SLOT = CUR * kAStageBytes;
         (void)consumer_id;
-        if((wasp_ablate() & 32) != 0)
-        {
-            return;   // ablation: idle consumer
-        }
-        // Q1: A(k, h0) landed -- it was read before the mid barrier, so this wait
-        // is cheap by construction -- and B(k) landed (prefetched one stage ago).
-        wasp_wait_q1(vmem_diag, k_stage);
+        // Q1: 64 MMACs.
         mmac_half(a_regs, b_regs[CUR][0], acc);
 
-        // Q2: issue the B prefetch -- 4 x buffer_load_dwordx4 in ONE asm block,
-        // the reference kernel's form (two IDXEN pairs, k-half on the immediate,
-        // the stage's K column on the uniform SGPR soffset) -- and read A(k, h1).
-        // The bytes land in b_regs[CUR ^ 1] and are consumed by the next
-        // interval's Q1 MMACs; that is what wasp_wait_q1()'s vmcnt half waits for.
+        // Q2: overlap the next B prefetch with the two halves of A(k, h1).
+        a_read_half_low<SLOT, true>(a_rb, a_regs);
         if(k_stage + 1 < num_loop)
         {
             load_B_stage(b_rsrc, b_pairs, k_stage + 1, b_regs[CUR ^ 1], vmem_diag);
         }
-        a_read_half<SLOT, true>(a_rb, a_regs);
+        a_read_half_high<SLOT, true>(a_rb, a_regs);
+        asm volatile("s_waitcnt lgkmcnt(0)\n" ::: "memory");
     }
 
     // Persona C driver: two intervals per k-stage, mid barrier between them.
@@ -1257,14 +1143,16 @@ struct GemmPipelineAgBgCrWasp : public GemmPipelineAgBgCrCompV3<Problem, Policy>
         }
         if((num_loop & 1) != 0)
         {
-            cp_I1<0, /*IS_FIRST=*/true>(consumer_id, 0, num_loop, a_rb, b_regs, a_regs, acc);
+            cp_I1<0, /*IS_FIRST=*/true>(
+                consumer_id, 0, num_loop, a_rb, b_regs, a_regs, vmem_diag, acc);
             wasp_detail::wasp_barrier_maybe();   // BAR(0).mid
             cp_I2<0>(
                 consumer_id, 0, num_loop, a_rb, b_rsrc, b_pairs, b_regs, a_regs, vmem_diag, acc);
             wasp_detail::wasp_barrier_maybe();   // BAR(0).end
             for(index_t k = 1; k < num_loop; k += 2)
             {
-                cp_I1<1, false>(consumer_id, k, num_loop, a_rb, b_regs, a_regs, acc);
+                cp_I1<1, false>(
+                    consumer_id, k, num_loop, a_rb, b_regs, a_regs, vmem_diag, acc);
                 wasp_detail::wasp_barrier_maybe();   // BAR(k).mid
                 cp_I2<1>(consumer_id,
                          k,
@@ -1277,7 +1165,8 @@ struct GemmPipelineAgBgCrWasp : public GemmPipelineAgBgCrCompV3<Problem, Policy>
                          vmem_diag,
                          acc);
                 wasp_detail::wasp_barrier_maybe();   // BAR(k).end
-                cp_I1<0, false>(consumer_id, k + 1, num_loop, a_rb, b_regs, a_regs, acc);
+                cp_I1<0, false>(
+                    consumer_id, k + 1, num_loop, a_rb, b_regs, a_regs, vmem_diag, acc);
                 wasp_detail::wasp_barrier_maybe();   // BAR(k+1).mid
                 cp_I2<0>(consumer_id,
                          k + 1,
@@ -1291,16 +1180,14 @@ struct GemmPipelineAgBgCrWasp : public GemmPipelineAgBgCrCompV3<Problem, Policy>
                          acc);
                 wasp_detail::wasp_barrier_maybe();   // BAR(k+1).end
             }
-            if((wasp_detail::wasp_ablate() & 32) == 0)
-            {
-                // Odd num_loop leaves the final stage at CUR=0.
-                asm volatile("s_waitcnt lgkmcnt(0)\n" ::: "memory");
-                mmac_half(a_regs, b_regs[0][1], acc);
-            }
+            // Odd num_loop leaves the final stage at CUR=0.
+            asm volatile("s_waitcnt lgkmcnt(0)\n" ::: "memory");
+            mmac_half(a_regs, b_regs[0][1], acc);
         }
         else
         {
-            cp_I1<0, /*IS_FIRST=*/true>(consumer_id, 0, num_loop, a_rb, b_regs, a_regs, acc);
+            cp_I1<0, /*IS_FIRST=*/true>(
+                consumer_id, 0, num_loop, a_rb, b_regs, a_regs, vmem_diag, acc);
             wasp_detail::wasp_barrier_maybe();   // BAR(0).mid
             cp_I2<0>(
                 consumer_id, 0, num_loop, a_rb, b_rsrc, b_pairs, b_regs, a_regs, vmem_diag, acc);
@@ -1308,7 +1195,8 @@ struct GemmPipelineAgBgCrWasp : public GemmPipelineAgBgCrCompV3<Problem, Policy>
 
             for(index_t k = 1; k < num_loop - 1; k += 2)
             {
-                cp_I1<1, false>(consumer_id, k, num_loop, a_rb, b_regs, a_regs, acc);
+                cp_I1<1, false>(
+                    consumer_id, k, num_loop, a_rb, b_regs, a_regs, vmem_diag, acc);
                 wasp_detail::wasp_barrier_maybe();   // BAR(k).mid
                 cp_I2<1>(consumer_id,
                          k,
@@ -1321,7 +1209,8 @@ struct GemmPipelineAgBgCrWasp : public GemmPipelineAgBgCrCompV3<Problem, Policy>
                          vmem_diag,
                          acc);
                 wasp_detail::wasp_barrier_maybe();   // BAR(k).end
-                cp_I1<0, false>(consumer_id, k + 1, num_loop, a_rb, b_regs, a_regs, acc);
+                cp_I1<0, false>(
+                    consumer_id, k + 1, num_loop, a_rb, b_regs, a_regs, vmem_diag, acc);
                 wasp_detail::wasp_barrier_maybe();   // BAR(k+1).mid
                 cp_I2<0>(consumer_id,
                          k + 1,
@@ -1335,7 +1224,14 @@ struct GemmPipelineAgBgCrWasp : public GemmPipelineAgBgCrCompV3<Problem, Policy>
                          acc);
                 wasp_detail::wasp_barrier_maybe();   // BAR(k+1).end
             }
-            cp_I1<1, false>(consumer_id, num_loop - 1, num_loop, a_rb, b_regs, a_regs, acc);
+            cp_I1<1, false>(consumer_id,
+                            num_loop - 1,
+                            num_loop,
+                            a_rb,
+                            b_regs,
+                            a_regs,
+                            vmem_diag,
+                            acc);
             wasp_detail::wasp_barrier_maybe();   // BAR(k).mid
             cp_I2<1>(consumer_id,
                      num_loop - 1,
@@ -1348,12 +1244,9 @@ struct GemmPipelineAgBgCrWasp : public GemmPipelineAgBgCrCompV3<Problem, Policy>
                      vmem_diag,
                      acc);
             wasp_detail::wasp_barrier_maybe();   // BAR(k).end
-            if((wasp_detail::wasp_ablate() & 32) == 0)
-            {
-                // Even num_loop leaves the final stage at CUR=1.
-                asm volatile("s_waitcnt lgkmcnt(0)\n" ::: "memory");
-                mmac_half(a_regs, b_regs[1][1], acc);
-            }
+            // Even num_loop leaves the final stage at CUR=1.
+            asm volatile("s_waitcnt lgkmcnt(0)\n" ::: "memory");
+            mmac_half(a_regs, b_regs[1][1], acc);
         }
     }
     // ------------------------------------------------------------------
@@ -1524,26 +1417,32 @@ struct GemmPipelineAgBgCrWasp : public GemmPipelineAgBgCrCompV3<Problem, Policy>
             wasp_detail::wasp_wait_vmcnt0();                 // A(0) landed
             wasp_detail::wasp_barrier_maybe();               // BAR prologue.end: publish A(0)
 
-            for(index_t k = 0; k < num_loop; ++k)
+            for(index_t k = 0; k + 1 < num_loop; ++k)
             {
                 // Issuing k+1 here instead of after the barrier buys its DMA a
                 // whole extra interval to land (it is confirmed below), and the
                 // slot it writes -- (k+1)%2 -- was last read by the consumers in
                 // stage k-1, i.e. one full interval before this issue.
-                if(k + 1 < num_loop)
-                {
-                    producer_fill(a_src, k + 1, wid);         // issue k+1 -> slot (k+1)%2
+                producer_fill(a_src, k + 1, wid);             // issue k+1 -> slot (k+1)%2
 #if defined(CK_TILE_GROUPED_GEMM_WASP_VMEM_WAIT_COUNT)
-                    if(k + 1 == wasp_detail::kVmemSampleStage)
-                    {
-                        vmem_diag.issued_at = wasp_detail::wasp_memtime();
-                        vmem_diag.issued = true;
-                    }
-#endif
+                if(k + 1 == wasp_detail::kVmemSampleStage)
+                {
+                    vmem_diag.issued_at = wasp_detail::wasp_memtime();
+                    vmem_diag.issued = true;
                 }
+#endif
                 wasp_detail::wasp_barrier_maybe();           // BAR(k).mid
                 wasp_detail::wasp_wait_vmcnt0_producer(vmem_diag, k + 1); // A(k+1) landed
                 wasp_detail::wasp_barrier_maybe();           // BAR(k).end: publish A(k+1)
+            }
+
+            // The final stage has no successor to issue, but still completes
+            // the same barrier/wait sequence as every other stage.
+            if(num_loop > 0)
+            {
+                wasp_detail::wasp_barrier_maybe();           // BAR(k).mid
+                wasp_detail::wasp_wait_vmcnt0_producer(vmem_diag, num_loop);
+                wasp_detail::wasp_barrier_maybe();           // BAR(k).end
             }
         }
         else
@@ -1577,16 +1476,12 @@ struct GemmPipelineAgBgCrWasp : public GemmPipelineAgBgCrCompV3<Problem, Policy>
                               (static_cast<uint64_t>(inrow) << 32) | (nrow + 16u)};
             // Destination of the prefetch, double buffered [parity][k-half][n].
             wasp_detail::stage16_t b_regs[2][2][WaspAccTile::kNIters];
-            // Prologue, mirroring the producer's: prime B(0), barrier, wait for
-            // it, barrier. The second barrier is the one that publishes A(0) --
-            // the producer reaches it only after waiting for that DMA.
-            // Prime B(0); the first stage's MMACs consume it (see the wait below).
+            // Prime B(0); Q0 waits for it after the matching prologue barriers.
             if(num_loop > 0)
             {
                 load_B_stage(b_rsrc, b_pr, 0, b_regs[0], vmem_diag);
             }
             wasp_detail::wasp_barrier_maybe();               // BAR prologue.mid
-            wasp_detail::wasp_wait_vmcnt0();                 // B(0) landed
             wasp_detail::wasp_barrier_maybe();               // BAR prologue.end
 
             // waves 0..3 -> C, 4..7 -> C'

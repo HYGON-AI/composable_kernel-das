@@ -486,85 +486,61 @@ if(GPU_TARGETS MATCHES "gfx936")
         PRIVATE ck_tile_hcu_grouped_gemm)
 endif()
 
-# Correctness + performance driver for the v7 BF16 NN / TN instances
-# (InstanceId 5000 / 5001). It goes through the versioned device-args ABI
-# exactly as a consumer does (select + run), and it links the grouped-GEMM
-# archive, so it also covers the selector route and the ABI dispatch that
-# production uses.
+# Unified correctness + performance driver for the v7/v8 BF16 NN/TN instances
+# and the WASP BF16 NT pipeline. --layout selects the corresponding kernel
+# family: NN -> v7, TN -> v8, NT -> WASP.
 if(TARGET ck_tile_hcu_grouped_gemm_v7_v8_bf16)
-    add_executable(tile_example_grouped_gemm_v7_instance_test EXCLUDE_FROM_ALL
-        grouped_gemm_v7_instance_test.cpp)
-    target_include_directories(tile_example_grouped_gemm_v7_instance_test
+    add_executable(tile_example_grouped_gemm_fused_test EXCLUDE_FROM_ALL
+        grouped_gemm_fused_test.cpp)
+    target_include_directories(tile_example_grouped_gemm_fused_test
         PRIVATE ${CMAKE_CURRENT_LIST_DIR})
-    target_compile_definitions(tile_example_grouped_gemm_v7_instance_test
+    target_compile_definitions(tile_example_grouped_gemm_fused_test
         PRIVATE CK_TILE_GROUPED_GEMM_FAST_BUILD)
-    target_link_libraries(tile_example_grouped_gemm_v7_instance_test
+    target_link_libraries(tile_example_grouped_gemm_fused_test
         PRIVATE ck_tile_hcu_grouped_gemm)
-    # Optional device-side functional reference: hipBLASLt, one plain GEMM per
-    # group (--hipblaslt-ref=1). Enabled only when the install the standalone
-    # harness builds against is present, so the test still builds everywhere.
+    # Optional hipBLASLt correctness/performance references for both backends.
     set(HIPBLASLT_INSTALL "/root/workspace/hipblaslt-install-0820/hipblaslt-install"
-        CACHE PATH "hipBLASLt install root for the v7 instance test")
-    if(EXISTS "${HIPBLASLT_INSTALL}/lib/libhipblaslt.so")
-        # SYSTEM: the hipBLASLt public header is not -Weverything clean; as a
-        # system include clang does not warn inside it.
-        target_include_directories(tile_example_grouped_gemm_v7_instance_test
+        CACHE PATH "hipBLASLt install root for grouped-GEMM fused tests")
+    if(EXISTS "${HIPBLASLT_INSTALL}/include/hipblaslt/hipblaslt.h" AND
+       EXISTS "${HIPBLASLT_INSTALL}/lib/libhipblaslt.so")
+        target_include_directories(tile_example_grouped_gemm_fused_test
             SYSTEM PRIVATE ${HIPBLASLT_INSTALL}/include)
-        target_link_libraries(tile_example_grouped_gemm_v7_instance_test
+        target_link_libraries(tile_example_grouped_gemm_fused_test
             PRIVATE ${HIPBLASLT_INSTALL}/lib/libhipblaslt.so)
-        set_target_properties(tile_example_grouped_gemm_v7_instance_test
+        set_target_properties(tile_example_grouped_gemm_fused_test
             PROPERTIES BUILD_RPATH "${HIPBLASLT_INSTALL}/lib"
                        INSTALL_RPATH "${HIPBLASLT_INSTALL}/lib")
-        target_compile_definitions(tile_example_grouped_gemm_v7_instance_test
-            PRIVATE CK_TILE_V7_TEST_HAS_HIPBLASLT)
+        target_compile_definitions(tile_example_grouped_gemm_fused_test
+            PRIVATE
+                CK_TILE_V7_TEST_HAS_HIPBLASLT
+                CK_TILE_GROUPED_GEMM_WASP_HAS_HIPBLASLT)
     endif()
-    add_test(NAME tile_example_grouped_gemm_v7_instance_test
-        COMMAND $<TARGET_FILE:tile_example_grouped_gemm_v7_instance_test>
-                --layout=NN --m=512 --n=512 --k=256 --groups=4 --iters=5 --warmup=2)
-    set_tests_properties(tile_example_grouped_gemm_v7_instance_test
+    add_test(NAME tile_example_grouped_gemm_fused_test
+        COMMAND $<TARGET_FILE:tile_example_grouped_gemm_fused_test>
+                --layout=NN --m=512 --n=512 --k=256
+                --groups=4 --iters=5 --warmup=2)
+    set_tests_properties(tile_example_grouped_gemm_fused_test
         PROPERTIES LABELS "hcu;ck_tile;grouped_gemm;v7;correctness;perf")
-endif()
 
-# Explicit opt-in driver for the Wasp NT grouped-GEMM pipeline. It is not part
-# of the default test suite: use the documented 8152x4096x4096 workload when
-# validating correctness, resources, and performance.
-add_executable(tile_example_grouped_gemm_wasp_test EXCLUDE_FROM_ALL
-    grouped_gemm_wasp_test.cpp)
-target_include_directories(tile_example_grouped_gemm_wasp_test
-    PRIVATE ${CMAKE_CURRENT_LIST_DIR})
-target_compile_definitions(tile_example_grouped_gemm_wasp_test
-    PRIVATE CK_TILE_GROUPED_GEMM_FAST_BUILD)
-if(NOT DEFINED HIPBLASLT_INSTALL)
-    set(HIPBLASLT_INSTALL "" CACHE PATH "hipBLASLt install root for the Wasp test")
-endif()
-if(EXISTS "${HIPBLASLT_INSTALL}/include/hipblaslt/hipblaslt.h" AND
-   EXISTS "${HIPBLASLT_INSTALL}/lib/libhipblaslt.so")
-    target_include_directories(tile_example_grouped_gemm_wasp_test
-        SYSTEM PRIVATE ${HIPBLASLT_INSTALL}/include)
-    target_link_libraries(tile_example_grouped_gemm_wasp_test
-        PRIVATE ${HIPBLASLT_INSTALL}/lib/libhipblaslt.so)
-    set_target_properties(tile_example_grouped_gemm_wasp_test
-        PROPERTIES BUILD_RPATH "${HIPBLASLT_INSTALL}/lib")
-    target_compile_definitions(tile_example_grouped_gemm_wasp_test
-        PRIVATE CK_TILE_GROUPED_GEMM_WASP_HAS_HIPBLASLT)
-endif()
-option(CK_TILE_GROUPED_GEMM_WASP_EPI_CYCLE_COUNT
-    "Instrument per-consumer Wasp epilogue cycles in the standalone test" OFF)
-if(CK_TILE_GROUPED_GEMM_WASP_EPI_CYCLE_COUNT)
-    target_compile_definitions(tile_example_grouped_gemm_wasp_test
-        PRIVATE CK_TILE_GROUPED_GEMM_WASP_EPI_CYCLE_COUNT)
-endif()
-option(CK_TILE_GROUPED_GEMM_WASP_VMEM_WAIT_COUNT
-    "Instrument one steady-state Wasp producer/consumer VMEM wait per wave" OFF)
-if(CK_TILE_GROUPED_GEMM_WASP_VMEM_WAIT_COUNT)
-    target_compile_definitions(tile_example_grouped_gemm_wasp_test
-        PRIVATE CK_TILE_GROUPED_GEMM_WASP_VMEM_WAIT_COUNT)
-endif()
-option(CK_TILE_GROUPED_GEMM_WASP_REVERSE_CTA_ORDER
-    "Diagnostic: reverse Wasp CTA-to-tile mapping without changing tile work" OFF)
-if(CK_TILE_GROUPED_GEMM_WASP_REVERSE_CTA_ORDER)
-    target_compile_definitions(tile_example_grouped_gemm_wasp_test
-        PRIVATE CK_TILE_GROUPED_GEMM_WASP_REVERSE_CTA_ORDER)
+    # Explicit diagnostic instrumentation options for the WASP backend.
+    option(CK_TILE_GROUPED_GEMM_WASP_EPI_CYCLE_COUNT
+        "Instrument per-consumer Wasp epilogue cycles in the fused test" OFF)
+    if(CK_TILE_GROUPED_GEMM_WASP_EPI_CYCLE_COUNT)
+        target_compile_definitions(tile_example_grouped_gemm_fused_test
+            PRIVATE CK_TILE_GROUPED_GEMM_WASP_EPI_CYCLE_COUNT)
+    endif()
+    option(CK_TILE_GROUPED_GEMM_WASP_VMEM_WAIT_COUNT
+        "Instrument one steady-state Wasp producer/consumer VMEM wait per wave" OFF)
+    if(CK_TILE_GROUPED_GEMM_WASP_VMEM_WAIT_COUNT)
+        target_compile_definitions(tile_example_grouped_gemm_fused_test
+            PRIVATE CK_TILE_GROUPED_GEMM_WASP_VMEM_WAIT_COUNT)
+    endif()
+    option(CK_TILE_GROUPED_GEMM_WASP_REVERSE_CTA_ORDER
+        "Diagnostic: reverse Wasp CTA-to-tile mapping without changing tile work" OFF)
+    if(CK_TILE_GROUPED_GEMM_WASP_REVERSE_CTA_ORDER)
+        target_compile_definitions(tile_example_grouped_gemm_fused_test
+            PRIVATE CK_TILE_GROUPED_GEMM_WASP_REVERSE_CTA_ORDER)
+    endif()
 endif()
 # Host-only Phase-1 selector/contract test. This target deliberately does not
 # link a grouped-GEMM provider, so adding it cannot alter a device launch.
