@@ -729,6 +729,117 @@ struct WarpGemmAttributeMmacImplBf16Bf16F32M16N16K16LitLts
     }
 };
 
+//FP32
+struct WarpGemmAttributeMmacImplF32F32F32M16N16K8
+{
+    using ADataType = float;
+    using BDataType = float;
+    using CDataType = float;
+
+    using AVecType = ext_vector_t<float, 2>;
+    using BVecType = ext_vector_t<float, 2>;
+    using CVecType = ext_vector_t<float, 4>;
+
+    // mmac inst size
+    static constexpr index_t kM = 16;
+    static constexpr index_t kN = 16;
+    static constexpr index_t kK = 8;
+
+    // thread layout
+    static constexpr index_t kAMLane     = 16;
+    static constexpr index_t kBNLane     = 16;
+    static constexpr index_t kABKLane    = 4;
+    static constexpr index_t kABKPerLane = 2; // 2 element per thread vec
+
+    // mmac C layout
+    static constexpr index_t kCMLane = 16;
+    static constexpr index_t kCNLane = 4;
+
+    static constexpr index_t kCMPerLane  = 1;
+    static constexpr index_t kCNPerLane  = 4;
+    static constexpr index_t kCN0PerLane = 4; // jump layout
+    static constexpr index_t kCN1PerLane = 1;
+    static constexpr index_t kCM1PerLane = kCMPerLane;
+    static constexpr index_t kCM0PerLane = kCMPerLane;
+
+    // c_vec += a_vec * b_vec
+    CK_TILE_DEVICE void
+    operator()(CVecType& c_vec, const AVecType& a_vec, const BVecType& b_vec) const
+    {
+#if defined(__gfx928__) || defined(__gfx936__) || defined(__gfx938__)
+        c_vec = __builtin_hcu_mmac_16x16x8_f32(a_vec, b_vec, c_vec);
+#elif defined(__gfx926__) || defined(__gfx92a__)
+        c_vec = __builtin_hcu_mmac_16x16x4_f32(a_vec[0], b_vec[0], c_vec);
+        c_vec = __builtin_hcu_mmac_16x16x4_f32(a_vec[1], b_vec[1], c_vec);
+#else
+        ignore = c_vec;
+        ignore = a_vec;
+        ignore = b_vec;
+#endif
+    }
+
+    // c_vec = a_vec * b_vec
+    CK_TILE_DEVICE CVecType operator()(const AVecType& a_vec, const BVecType& b_vec) const
+    {
+        CVecType c_vec{0.f};
+        operator()(c_vec, a_vec, b_vec);
+        return c_vec;
+    }
+};
+
+// FP32
+// C transposed (operand swap, matching the conv TransC iterators like F16 TransCLegacy)
+struct WarpGemmAttributeMmacImplF32F32F32M16N16K8TransC
+    : public WarpGemmAttributeMmacImplF32F32F32M16N16K8
+{
+    using Base = WarpGemmAttributeMmacImplF32F32F32M16N16K8;
+
+    using ADataType = typename Base::ADataType;
+    using BDataType = typename Base::BDataType;
+    using CDataType = typename Base::CDataType;
+
+    using AVecType = typename Base::AVecType;
+    using BVecType = typename Base::BVecType;
+    using CVecType = typename Base::CVecType;
+
+    // mmac inst size
+    static constexpr index_t kM = Base::kM;
+    static constexpr index_t kN = Base::kN;
+    static constexpr index_t kK = Base::kK;
+
+    // thread layout
+    static constexpr index_t kAMLane     = Base::kAMLane;
+    static constexpr index_t kBNLane     = Base::kBNLane;
+    static constexpr index_t kABKLane    = Base::kABKLane;
+    static constexpr index_t kABKPerLane = Base::kABKPerLane; // 2 element per thread vec
+
+    // tranposed mmac C layout
+    static constexpr index_t kCMLane = Base::kCNLane;
+    static constexpr index_t kCNLane = Base::kCMLane;
+
+    static constexpr index_t kCNPerLane  = Base::kCMPerLane;
+    static constexpr index_t kCM0PerLane = Base::kCN0PerLane;
+    static constexpr index_t kCM1PerLane = Base::kCN1PerLane;
+
+    // FIXME: workaournd
+    static constexpr index_t kCMPerLane  = -1;
+    static constexpr index_t kCN0PerLane = -1;
+    static constexpr index_t kCN1PerLane = -1;
+
+    // c_vec += b_vec * a_vec
+    CK_TILE_DEVICE void
+    operator()(CVecType& c_vec, const AVecType& a_vec, const BVecType& b_vec) const
+    {
+        Base::operator()(c_vec, b_vec, a_vec);
+    }
+
+    // c_vec = b_vec * a_vec
+    CK_TILE_DEVICE CVecType operator()(const AVecType& a_vec, const BVecType& b_vec) const
+    {
+        return Base::operator()(b_vec, a_vec);
+    }
+};
+
 //int8
 struct WarpGemmAttributeMmacImplI8I8I32M16N16K32
 {
