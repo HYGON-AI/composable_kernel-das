@@ -1,6 +1,31 @@
 
 # Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 # SPDX: SPDX-License-Identifier: MIT
+
+add_example_executable(example_hcu_ck_tile_fused_moe_flatmm_uk
+                       fused_moe_flatmm_uk_fp16.cpp)
+
+add_test(NAME example_hcu_ck_tile_fused_moe_flatmm_uk_smoke
+    COMMAND $<TARGET_FILE:example_hcu_ck_tile_fused_moe_flatmm_uk> 64 4 2 256 256 1 2 2 0)
+
+add_test(NAME example_hcu_ck_tile_fused_moe_flatmm_uk_partial_interm
+    COMMAND $<TARGET_FILE:example_hcu_ck_tile_fused_moe_flatmm_uk> 64 4 2 256 1232 1 2 2 0)
+
+add_test(NAME example_hcu_ck_tile_fused_moe_flatmm_uk_mock_id
+    COMMAND $<TARGET_FILE:example_hcu_ck_tile_fused_moe_flatmm_uk> 64 4 2 256 256 1 2 2 0 11939 2)
+
+add_test(NAME example_hcu_ck_tile_fused_moe_flatmm_uk_tiny_hidden
+    COMMAND $<TARGET_FILE:example_hcu_ck_tile_fused_moe_flatmm_uk> 8192 128 64 1 1 1 2 2 0)
+add_test(NAME example_hcu_ck_tile_fused_moe_flatmm_uk_ragged_hidden
+    COMMAND $<TARGET_FILE:example_hcu_ck_tile_fused_moe_flatmm_uk> 64 4 2 3 256 1 2 2 0)
+
+set_tests_properties(example_hcu_ck_tile_fused_moe_flatmm_uk_smoke
+                     example_hcu_ck_tile_fused_moe_flatmm_uk_partial_interm
+                     example_hcu_ck_tile_fused_moe_flatmm_uk_mock_id
+                     example_hcu_ck_tile_fused_moe_flatmm_uk_tiny_hidden
+                     example_hcu_ck_tile_fused_moe_flatmm_uk_ragged_hidden
+                     PROPERTIES LABELS "hcu;ck_tile;fused_moe;smoke")
+
 set(TILE_EXAPMLE_FUSED_MOE "tile_example_fused_moe")
 # not using add_example_executable() to add this target, since we don't want this to have
 # to be included in "make all/install/check"

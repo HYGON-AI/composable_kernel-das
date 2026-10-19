@@ -53,14 +53,14 @@ float fused_moegemm_(const ck_tile::stream_config& s, fused_moegemm_args a)
                                                            typename Ts_::AScaleDataType,
                                                            typename Ts_::GScaleDataType,
                                                            typename Ts_::DScaleDataType,
-                                                           typename Ts_::GZeroPointDataType,
-                                                           typename Ts_::DZeroPointDataType,
                                                            typename Ts_::YSmoothScaleDataType,
                                                            typename Ts_::TopkWeightDataType,
                                                            typename Ts_::IndexDataType,
                                                            f_act_, // TODO: hardcoded
                                                            f_shape,
-                                                           f_traits>;
+                                                           f_traits,
+                                                           typename Ts_::GZeroPointDataType,
+                                                           typename Ts_::DZeroPointDataType>;
 
     using f_pipeline = ck_tile::FusedMoeGemmPipeline_FlatmmEx<f_problem>;
     // using f_pipeline    = ck_tile::FusedMoeGemmPipeline_FlatmmUk<f_problem>;
@@ -126,7 +126,9 @@ float fused_moegemm_swizzled_lds_(const ck_tile::stream_config& s, fused_moegemm
                                                  Ts_::Gemm0NInterleave,
                                                  Ts_::Gemm1NInterleave,
                                                  ck_tile::FusedMoeGemmWeightPermuteEnum::no_permute,
-                                                 Ts_::swizzled>;
+                                                 Ts_::swizzled,
+                                                 true /* pad hidden size */,
+                                                 false /* pad intermediate size */>;
     using f_shape  = ck_tile::FusedMoeGemmShape<typename Ts_::BlockTile_0,
                                                typename Ts_::WarpPerBlock_0,
                                                typename Ts_::WarpTile_0,
@@ -152,14 +154,14 @@ float fused_moegemm_swizzled_lds_(const ck_tile::stream_config& s, fused_moegemm
                                                            typename Ts_::AScaleDataType,
                                                            typename Ts_::GScaleDataType,
                                                            typename Ts_::DScaleDataType,
-                                                           typename Ts_::GZeroPointDataType,
-                                                           typename Ts_::DZeroPointDataType,
                                                            typename Ts_::YSmoothScaleDataType,
                                                            typename Ts_::TopkWeightDataType,
                                                            typename Ts_::IndexDataType,
                                                            f_act_, // TODO: hardcoded
                                                            f_shape,
-                                                           f_traits>;
+                                                           f_traits,
+                                                           typename Ts_::GZeroPointDataType,
+                                                           typename Ts_::DZeroPointDataType>;
 
     using f_pipeline = ck_tile::FusedMoeGemmPipeline_Flatmm_GU_Regs_D_LDS<f_problem>;
     // using f_pipeline    = ck_tile::FusedMoeGemmPipeline_FlatmmUk<f_problem>;
@@ -220,14 +222,14 @@ float fused_moegemm_wreg_(const ck_tile::stream_config& s, fused_moegemm_args a)
                                                            typename Ts_::AScaleDataType,
                                                            typename Ts_::GScaleDataType,
                                                            typename Ts_::DScaleDataType,
-                                                           typename Ts_::GZeroPointDataType,
-                                                           typename Ts_::DZeroPointDataType,
                                                            typename Ts_::YSmoothScaleDataType,
                                                            typename Ts_::TopkWeightDataType,
                                                            typename Ts_::IndexDataType,
                                                            f_act_, // TODO: hardcoded
                                                            f_shape,
-                                                           f_traits>;
+                                                           f_traits,
+                                                           typename Ts_::GZeroPointDataType,
+                                                           typename Ts_::DZeroPointDataType>;
 
     using f_pipeline = ck_tile::FusedMoeGemmPipeline_Flatmm_Wreg<f_problem>;
     // using f_pipeline    = ck_tile::FusedMoeGemmPipeline_FlatmmUk<f_problem>;
@@ -292,14 +294,14 @@ float fused_moegemm_wreg_shuffle_(const ck_tile::stream_config& s, fused_moegemm
                                                            typename Ts_::AScaleDataType,
                                                            typename Ts_::GScaleDataType,
                                                            typename Ts_::DScaleDataType,
-                                                           typename Ts_::GZeroPointDataType,
-                                                           typename Ts_::DZeroPointDataType,
                                                            typename Ts_::YSmoothScaleDataType,
                                                            typename Ts_::TopkWeightDataType,
                                                            typename Ts_::IndexDataType,
                                                            f_act_, // TODO: hardcoded
                                                            f_shape,
-                                                           f_traits>;
+                                                           f_traits,
+                                                           typename Ts_::GZeroPointDataType,
+                                                           typename Ts_::DZeroPointDataType>;
     
     using f_pipeline = ck_tile::FusedMoeGemmPipeline_Flatmm_Wreg_shuffle<f_problem>;
     // using f_pipeline    = ck_tile::FusedMoeGemmPipeline_FlatmmUk<f_problem>;
@@ -364,14 +366,14 @@ float fused_moegemm_wt_bd_shuffle_(const ck_tile::stream_config& s, fused_moegem
                                                            typename Ts_::AScaleDataType,
                                                            typename Ts_::GScaleDataType,
                                                            typename Ts_::DScaleDataType,
-                                                           typename Ts_::GZeroPointDataType,
-                                                           typename Ts_::DZeroPointDataType,
                                                            typename Ts_::YSmoothScaleDataType,
                                                            typename Ts_::TopkWeightDataType,
                                                            typename Ts_::IndexDataType,
                                                            f_act_, // TODO: hardcoded
                                                            f_shape,
-                                                           f_traits>;
+                                                           f_traits,
+                                                           typename Ts_::GZeroPointDataType,
+                                                           typename Ts_::DZeroPointDataType>;
     
     using f_pipeline = ck_tile::FusedMoeGemmPipeline_Flatmm_Wt_shuffle<f_problem>;
     // using f_pipeline    = ck_tile::FusedMoeGemmPipeline_FlatmmUk<f_problem>;
@@ -436,14 +438,14 @@ float fused_moegemm_wt_shuffle_quant(const ck_tile::stream_config& s, fused_moeg
                                                            typename Ts_::AScaleDataType,
                                                            typename Ts_::GScaleDataType,
                                                            typename Ts_::DScaleDataType,
-                                                           typename Ts_::GZeroPointDataType,
-                                                           typename Ts_::DZeroPointDataType,
                                                            typename Ts_::YSmoothScaleDataType,
                                                            typename Ts_::TopkWeightDataType,
                                                            typename Ts_::IndexDataType,
                                                            f_act_, // TODO: hardcoded
                                                            f_shape,
                                                            f_traits,
+                                                           typename Ts_::GZeroPointDataType,
+                                                           typename Ts_::DZeroPointDataType,
                                                            Ts_::FusedQuant,
                                                            Ts_::QuantBlockSizeN,
                                                            Ts_::QuantBlockSizeK>;
@@ -510,14 +512,14 @@ float fused_moegemm_wt_w8a8_quant(const ck_tile::stream_config& s, fused_moegemm
                                                            typename Ts_::AScaleDataType,
                                                            typename Ts_::GScaleDataType,
                                                            typename Ts_::DScaleDataType,
-                                                           typename Ts_::GZeroPointDataType,
-                                                           typename Ts_::DZeroPointDataType,
                                                            typename Ts_::YSmoothScaleDataType,
                                                            typename Ts_::TopkWeightDataType,
                                                            typename Ts_::IndexDataType,
                                                            f_act_, // TODO: hardcoded
                                                            f_shape,
                                                            f_traits,
+                                                           typename Ts_::GZeroPointDataType,
+                                                           typename Ts_::DZeroPointDataType,
                                                            Ts_::FusedQuant,
                                                            Ts_::QuantBlockSizeN,
                                                            Ts_::QuantBlockSizeK>;
@@ -584,14 +586,14 @@ float fused_moegemm_wt_w4a16_quant(const ck_tile::stream_config& s, fused_moegem
                                                            typename Ts_::AScaleDataType,
                                                            typename Ts_::GScaleDataType,
                                                            typename Ts_::DScaleDataType,
-                                                           typename Ts_::GZeroPointDataType,
-                                                           typename Ts_::DZeroPointDataType,
                                                            typename Ts_::YSmoothScaleDataType,
                                                            typename Ts_::TopkWeightDataType,
                                                            typename Ts_::IndexDataType,
                                                            f_act_, // TODO: hardcoded
                                                            f_shape,
                                                            f_traits,
+                                                           typename Ts_::GZeroPointDataType,
+                                                           typename Ts_::DZeroPointDataType,
                                                            Ts_::FusedQuant,
                                                            Ts_::QuantBlockSizeN,
                                                            Ts_::QuantBlockSizeK>;
@@ -657,14 +659,14 @@ float fused_moegemm_wt_w4a8_quant(const ck_tile::stream_config& s, fused_moegemm
                                                            typename Ts_::AScaleDataType,
                                                            typename Ts_::GScaleDataType,
                                                            typename Ts_::DScaleDataType,
-                                                           typename Ts_::GZeroPointDataType,
-                                                           typename Ts_::DZeroPointDataType,
                                                            typename Ts_::YSmoothScaleDataType,
                                                            typename Ts_::TopkWeightDataType,
                                                            typename Ts_::IndexDataType,
                                                            f_act_, // TODO: hardcoded
                                                            f_shape,
                                                            f_traits,
+                                                           typename Ts_::GZeroPointDataType,
+                                                           typename Ts_::DZeroPointDataType,
                                                            Ts_::FusedQuant,
                                                            Ts_::QuantBlockSizeN,
                                                            Ts_::QuantBlockSizeK>;

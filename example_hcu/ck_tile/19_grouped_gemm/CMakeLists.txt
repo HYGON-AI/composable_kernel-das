@@ -339,6 +339,52 @@ set_source_files_properties(
     ${HCU_GROUPED_GEMM_GFX936_SELECTED_SOURCES}
     PROPERTIES
         COMPILE_OPTIONS "-Wno-unused-template;-Wno-unneeded-internal-declaration")
+# ---------------------------------------------------------------------------
+# v7 BF16 NN / TN kernels as precompiled CK instances.
+#
+# These two translation units are the instance entries (see their headers): the
+# whole kernel body lives in ck_tile headers (gemm_pipeline_v7_uniform.hpp +
+# grouped_gemm_v7_uniform_epilogue.hpp, instantiated through GroupedGemmKernel by
+# grouped_gemm_v7_uniform_launch.hpp). They are NOT part of
+# grouped_gemm_device_args_provider_sources.txt on purpose: the v7 pipelines
+# were tuned under an explicit codegen contract -- the flags below (in
+# particular the VGPR budget that a wrapping tile loop or a generic-pointer
+# kargs read would break) -- and a consumer that compiles the manifest itself
+# would silently drop that contract. The archive carries the flags with it, and
+# any consumer of the manifest that wants these instances must extend its own
+# compile options to match.
+if(GPU_TARGETS MATCHES "gfx936")
+    add_library(ck_tile_hcu_grouped_gemm_v7_v8_bf16 STATIC EXCLUDE_FROM_ALL
+        instances/grouped_gemm_v7_bf16_nn_device_args.cpp
+        instances/grouped_gemm_v8_bf16_tn_device_args.cpp)
+    target_include_directories(ck_tile_hcu_grouped_gemm_v7_v8_bf16
+        PRIVATE ${CMAKE_CURRENT_LIST_DIR})
+    # No -D__gfx936__ here: the device pass defines the arch macro itself for
+    # --offload-arch=gfx936, and a fat binary building this target for gfx938
+    # as well must see gfx938, not a forced gfx936. The pipeline's
+    # CACHE_SWIZZLE descriptor bit (word1 bit 30) keys off
+    # `__gfx936__ || __gfx938__`, so it stays live either way.
+    target_compile_options(ck_tile_hcu_grouped_gemm_v7_v8_bf16
+        PRIVATE
+            "SHELL: -mllvm -support-768-vgprs=true"
+            "SHELL: -mllvm -disable-machine-sink"
+            "SHELL: -mllvm -disable-code-sink"
+            "SHELL: -mllvm -amdgpu-enable-rewrite-partial-reg-uses=false"
+            "SHELL: -mllvm -allow-gvn-convergent-call=true"
+            "SHELL: -mllvm -disallow-uniform-vmed3-combine=true"
+            "SHELL: -mllvm -hcu-pre-emit-load-store-opt=false"
+            "SHELL: -mllvm -amdgpu-early-inline-all=true"
+            "SHELL: -mllvm -amdgpu-function-calls=false"
+            "-fno-finite-math-only"
+            "-Wno-unused-result")
+    # -mcode-object-version=5 and --gpu-max-threads-per-block=256 from the
+    # reference harness are deliberately NOT copied: the first is a module ABI
+    # choice this build already makes globally, and the second states 256
+    # threads while these kernels launch 512.
+    set_target_properties(ck_tile_hcu_grouped_gemm_v7_v8_bf16
+        PROPERTIES POSITION_INDEPENDENT_CODE ON)
+endif()
+
 target_include_directories(ck_tile_hcu_grouped_gemm PRIVATE ${CMAKE_CURRENT_LIST_DIR})
 target_compile_definitions(ck_tile_hcu_grouped_gemm
     PRIVATE
@@ -381,6 +427,16 @@ set_target_properties(ck_tile_hcu_grouped_gemm PROPERTIES POSITION_INDEPENDENT_C
 ck_tile_hcu_grouped_gemm_apply_codegen(ck_tile_hcu_grouped_gemm)
 target_link_libraries(ck_tile_hcu_grouped_gemm
     PUBLIC ck_tile_hcu_grouped_gemm_device_args_providers)
+if(TARGET ck_tile_hcu_grouped_gemm_v7_v8_bf16)
+    # Pair the dispatch (grouped_gemm_device_args.cpp) and the selector route
+    # with the entries this archive actually provides: an arch build without
+    # them must not name InstanceId 5000/5001, exactly like the promoted-NN
+    # instances above.
+    target_link_libraries(ck_tile_hcu_grouped_gemm
+        PUBLIC ck_tile_hcu_grouped_gemm_v7_v8_bf16)
+    target_compile_definitions(ck_tile_hcu_grouped_gemm
+        PRIVATE CK_TILE_GROUPED_GEMM_DEVICE_ARGS_HAS_V7_V8_BF16)
+endif()
 
 # Minimal consumer-independent library used by the public C ABI matrix. It
 # deliberately excludes all default-off Phase316/317 candidate TUs so generic
@@ -430,6 +486,62 @@ if(GPU_TARGETS MATCHES "gfx936")
         PRIVATE ck_tile_hcu_grouped_gemm)
 endif()
 
+# Unified correctness + performance driver for the v7/v8 BF16 NN/TN instances
+# and the WASP BF16 NT pipeline. --layout selects the corresponding kernel
+# family: NN -> v7, TN -> v8, NT -> WASP.
+if(TARGET ck_tile_hcu_grouped_gemm_v7_v8_bf16)
+    add_executable(tile_example_grouped_gemm_fused_test EXCLUDE_FROM_ALL
+        grouped_gemm_fused_test.cpp)
+    target_include_directories(tile_example_grouped_gemm_fused_test
+        PRIVATE ${CMAKE_CURRENT_LIST_DIR})
+    target_compile_definitions(tile_example_grouped_gemm_fused_test
+        PRIVATE CK_TILE_GROUPED_GEMM_FAST_BUILD)
+    target_link_libraries(tile_example_grouped_gemm_fused_test
+        PRIVATE ck_tile_hcu_grouped_gemm)
+    # Optional hipBLASLt correctness/performance references for both backends.
+    set(HIPBLASLT_INSTALL "/root/workspace/hipblaslt-install-0820/hipblaslt-install"
+        CACHE PATH "hipBLASLt install root for grouped-GEMM fused tests")
+    if(EXISTS "${HIPBLASLT_INSTALL}/include/hipblaslt/hipblaslt.h" AND
+       EXISTS "${HIPBLASLT_INSTALL}/lib/libhipblaslt.so")
+        target_include_directories(tile_example_grouped_gemm_fused_test
+            SYSTEM PRIVATE ${HIPBLASLT_INSTALL}/include)
+        target_link_libraries(tile_example_grouped_gemm_fused_test
+            PRIVATE ${HIPBLASLT_INSTALL}/lib/libhipblaslt.so)
+        set_target_properties(tile_example_grouped_gemm_fused_test
+            PROPERTIES BUILD_RPATH "${HIPBLASLT_INSTALL}/lib"
+                       INSTALL_RPATH "${HIPBLASLT_INSTALL}/lib")
+        target_compile_definitions(tile_example_grouped_gemm_fused_test
+            PRIVATE
+                CK_TILE_V7_TEST_HAS_HIPBLASLT
+                CK_TILE_GROUPED_GEMM_WASP_HAS_HIPBLASLT)
+    endif()
+    add_test(NAME tile_example_grouped_gemm_fused_test
+        COMMAND $<TARGET_FILE:tile_example_grouped_gemm_fused_test>
+                --layout=NN --m=512 --n=512 --k=256
+                --groups=4 --iters=5 --warmup=2)
+    set_tests_properties(tile_example_grouped_gemm_fused_test
+        PROPERTIES LABELS "hcu;ck_tile;grouped_gemm;v7;correctness;perf")
+
+    # Explicit diagnostic instrumentation options for the WASP backend.
+    option(CK_TILE_GROUPED_GEMM_WASP_EPI_CYCLE_COUNT
+        "Instrument per-consumer Wasp epilogue cycles in the fused test" OFF)
+    if(CK_TILE_GROUPED_GEMM_WASP_EPI_CYCLE_COUNT)
+        target_compile_definitions(tile_example_grouped_gemm_fused_test
+            PRIVATE CK_TILE_GROUPED_GEMM_WASP_EPI_CYCLE_COUNT)
+    endif()
+    option(CK_TILE_GROUPED_GEMM_WASP_VMEM_WAIT_COUNT
+        "Instrument one steady-state Wasp producer/consumer VMEM wait per wave" OFF)
+    if(CK_TILE_GROUPED_GEMM_WASP_VMEM_WAIT_COUNT)
+        target_compile_definitions(tile_example_grouped_gemm_fused_test
+            PRIVATE CK_TILE_GROUPED_GEMM_WASP_VMEM_WAIT_COUNT)
+    endif()
+    option(CK_TILE_GROUPED_GEMM_WASP_REVERSE_CTA_ORDER
+        "Diagnostic: reverse Wasp CTA-to-tile mapping without changing tile work" OFF)
+    if(CK_TILE_GROUPED_GEMM_WASP_REVERSE_CTA_ORDER)
+        target_compile_definitions(tile_example_grouped_gemm_fused_test
+            PRIVATE CK_TILE_GROUPED_GEMM_WASP_REVERSE_CTA_ORDER)
+    endif()
+endif()
 # Host-only Phase-1 selector/contract test. This target deliberately does not
 # link a grouped-GEMM provider, so adding it cannot alter a device launch.
 add_executable(tile_example_grouped_gemm_selector_test EXCLUDE_FROM_ALL

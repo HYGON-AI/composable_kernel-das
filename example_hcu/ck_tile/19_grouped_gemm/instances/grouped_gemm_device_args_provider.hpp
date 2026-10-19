@@ -154,7 +154,13 @@ int launch_registry_candidate(ck_tile::GroupedGemmInstanceId instance_id,
     case ck_tile::GroupedGemmInstanceId::bw_family_bf16_nn_fixed_srd_lds8:
     case ck_tile::GroupedGemmInstanceId::bw_family_bf16_nn_fast_vmem3:
     case ck_tile::GroupedGemmInstanceId::bw_family_blas_transposed:
-    case ck_tile::GroupedGemmInstanceId::bw_family_logical_k_tail: break;
+    case ck_tile::GroupedGemmInstanceId::bw_family_logical_k_tail:
+    // The v7 instances (5000/5001) are not registry candidates: they are
+    // dispatched by grouped_gemm_device_args.cpp straight to their device-args
+    // entries (see dispatch_registry_candidate), so reaching this switch with
+    // one of them is a caller error and falls through to unsupported.
+    case ck_tile::GroupedGemmInstanceId::v7_bf16_nn:
+    case ck_tile::GroupedGemmInstanceId::v8_bf16_tn: break;
 #if defined(CK_TILE_GROUPED_GEMM_DEVICE_ARGS_REGISTRY_GFX936)
     case ck_tile::GroupedGemmInstanceId::gfx936_v3_256_m_only_padding:
         if(layout == ck_tile::GroupedGemmLayout::nt)

@@ -1,0 +1,11 @@
+# Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
+# SPDX-License-Identifier: MIT
+# Modified by Hygon Information Technology Co., Ltd.
+
+# GroupedGEMM tile loop instances for HCU (gfx936 family, 16x16 XDL tiles only).
+set(GROUPED_GEMM_TILE_LOOP_HCU_INSTANCES
+	device_grouped_gemm_xdl_tile_loop_f16_f16_f16_mk_kn_mn_instance.cpp
+	device_grouped_gemm_xdl_tile_loop_f16_f16_f16_mk_nk_mn_instance.cpp
+	)
+
+add_instance_library(device_grouped_gemm_tile_loop_instance ${GROUPED_GEMM_TILE_LOOP_HCU_INSTANCES})

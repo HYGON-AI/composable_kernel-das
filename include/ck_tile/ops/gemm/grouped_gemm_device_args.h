@@ -63,7 +63,11 @@ typedef enum ck_tile_hcu_grouped_gemm_instance_id_v1
     CK_TILE_HCU_GROUPED_GEMM_INSTANCE_V3_128_M4_FULL_PADDING_V1 = 4009,
     CK_TILE_HCU_GROUPED_GEMM_INSTANCE_V3_128_M4_FULL_PADDING_GFX936_V1 = 4010,
     CK_TILE_HCU_GROUPED_GEMM_INSTANCE_V4_64_M01_4_GFX936_V1 = 4011,
-    CK_TILE_HCU_GROUPED_GEMM_INSTANCE_V6_M32_NONPADDING_MLE8_FAMILY_B_GFX936_V1 = 4104
+    CK_TILE_HCU_GROUPED_GEMM_INSTANCE_V6_M32_NONPADDING_MLE8_FAMILY_B_GFX936_V1 = 4104,
+    // v7: the uniform Direct-to-LDS NN / TN kernels driven through the
+    // device-args ABI.
+    CK_TILE_HCU_GROUPED_GEMM_INSTANCE_V7_BF16_NN_V1 = 5000,
+    CK_TILE_HCU_GROUPED_GEMM_INSTANCE_V8_BF16_TN_V1 = 5001
 } ck_tile_hcu_grouped_gemm_instance_id_v1;
 
 typedef enum ck_tile_hcu_grouped_gemm_candidate_family_v1
@@ -71,7 +75,8 @@ typedef enum ck_tile_hcu_grouped_gemm_candidate_family_v1
     CK_TILE_HCU_GROUPED_GEMM_CANDIDATE_FAMILY_BW_V1 = 0,
     CK_TILE_HCU_GROUPED_GEMM_CANDIDATE_FAMILY_GFX936_V3_V1 = 1,
     CK_TILE_HCU_GROUPED_GEMM_CANDIDATE_FAMILY_GFX938_MLS_V1 = 2,
-    CK_TILE_HCU_GROUPED_GEMM_CANDIDATE_FAMILY_V4_V1 = 3
+    CK_TILE_HCU_GROUPED_GEMM_CANDIDATE_FAMILY_V4_V1 = 3,
+    CK_TILE_HCU_GROUPED_GEMM_CANDIDATE_FAMILY_V7_V1 = 4
 } ck_tile_hcu_grouped_gemm_candidate_family_v1;
 
 typedef enum ck_tile_hcu_grouped_gemm_architecture_mask_v1

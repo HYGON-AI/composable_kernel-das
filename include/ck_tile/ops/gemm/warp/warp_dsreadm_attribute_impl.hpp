@@ -48,7 +48,7 @@ struct WarpDsreadmAttributeImplF16MN32K16
     {
 #if defined(__gfx928__) || defined(__gfx92a__) || defined(__gfx936__) || defined(__gfx938__) || \
     defined(__gfx946__)
-        ret = __builtin_hcu_ds_read_m32x16_f16(lds_ptr);
+        ret = __builtin_hcu_ds_read_m32x16_f16(reinterpret_cast<__fp16*>(const_cast<RawType*>(lds_ptr)));
 #else
         detail::swallow{lds_ptr, ret};
 #endif
@@ -88,7 +88,7 @@ struct WarpDsreadmAttributeImplF16MN32K16Alt
     {
 #if defined(__gfx928__) || defined(__gfx92a__) || defined(__gfx936__) || defined(__gfx938__) || \
     defined(__gfx946__)
-        ret = __builtin_hcu_ds_read_m32x16_f16_alt(lds_ptr);
+        ret = __builtin_hcu_ds_read_m32x16_f16_alt(reinterpret_cast<__fp16*>(const_cast<RawType*>(lds_ptr)));
 #else
         detail::swallow{lds_ptr, ret};
 #endif
@@ -108,7 +108,7 @@ struct WarpDsreadmAttributeImplBF16MN32K16 : WarpDsreadmAttributeImplF16MN32K16
 #if defined(__gfx928__) || defined(__gfx92a__) || defined(__gfx936__) || defined(__gfx938__) || \
     defined(__gfx946__)
         const auto raw = __builtin_hcu_ds_read_m32x16_f16(
-            reinterpret_cast<const fp16_t*>(lds_ptr));
+            reinterpret_cast<__fp16*>(const_cast<RawType*>(lds_ptr)));
         ret = bit_cast<RetType>(raw);
 #else
         detail::swallow{lds_ptr, ret};
@@ -126,7 +126,7 @@ struct WarpDsreadmAttributeImplBF16MN32K16Alt : WarpDsreadmAttributeImplF16MN32K
 #if defined(__gfx928__) || defined(__gfx92a__) || defined(__gfx936__) || defined(__gfx938__) || \
     defined(__gfx946__)
         const auto raw = __builtin_hcu_ds_read_m32x16_f16_alt(
-            reinterpret_cast<const fp16_t*>(lds_ptr));
+            reinterpret_cast<__fp16*>(const_cast<RawType*>(lds_ptr)));
         ret = bit_cast<RetType>(raw);
 #else
         detail::swallow{lds_ptr, ret};

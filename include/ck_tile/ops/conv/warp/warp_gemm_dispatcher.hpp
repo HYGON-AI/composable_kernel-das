@@ -130,6 +130,58 @@ struct WarpGemmMmacDispatcher<bf16_t,
             KIter>>;
 };
 
+template <index_t MmmacIter,
+          index_t NmmacIter,
+          index_t MmmacInterleave,
+          index_t NmmacInterleave,
+          index_t KIter>
+struct WarpGemmMmacDispatcher<float,
+                              float,
+                              float,
+                              MmmacIter,
+                              NmmacIter,
+                              16,
+                              16,
+                              MmmacInterleave,
+                              NmmacInterleave,
+                              KIter,
+                              false>
+{
+    using Type =
+        WarpGemmImpl<WarpGemmAttributeMmacIterateK<WarpGemmAttributeMmacImplF32F32F32M16N16K8,
+                                                   MmmacIter,
+                                                   NmmacIter,
+                                                   MmmacInterleave,
+                                                   NmmacInterleave,
+                                                   KIter>>;
+};
+
+template <index_t MmmacIter,
+          index_t NmmacIter,
+          index_t MmmacInterleave,
+          index_t NmmacInterleave,
+          index_t KIter>
+struct WarpGemmMmacDispatcher<float,
+                              float,
+                              float,
+                              MmmacIter,
+                              NmmacIter,
+                              16,
+                              16,
+                              MmmacInterleave,
+                              NmmacInterleave,
+                              KIter,
+                              true>
+{
+    using Type = WarpGemmImpl<
+        WarpGemmAttributeMmacIterateKTransC<WarpGemmAttributeMmacImplF32F32F32M16N16K8TransC,
+                                            MmmacIter,
+                                            NmmacIter,
+                                            MmmacInterleave,
+                                            NmmacInterleave,
+                                            KIter>>;
+};
+
 } // namespace impl
 
 template <typename AType,
