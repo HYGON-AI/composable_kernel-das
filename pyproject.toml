@@ -54,6 +54,7 @@ ck4inductor = "python/ck4inductor"
     "src/tensor_operation_instance_hcu/gpu/gemm_multi_abd/**/*.hpp",
     "src/tensor_operation_instance_hcu/gpu/grouped_conv2d_fwd_gfx*/**/*.cpp",
     "src/tensor_operation_instance_hcu/gpu/grouped_conv2d_fwd_gfx*/**/*.hpp",
+    "src/tensor_operation_instance_hcu/gpu/grouped_conv2d_fwd/**/*.hpp",
     "src/tensor_operation_instance/gpu/grouped_conv2d_fwd/**/*.cpp",
     "src/tensor_operation_instance/gpu/grouped_conv2d_fwd/**/*.hpp",
 ]
