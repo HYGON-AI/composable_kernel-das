@@ -653,7 +653,7 @@ struct GemmPipelineAgBgCrWasp : public GemmPipelineAgBgCrCompV3<Problem, Policy>
             static_cast<uint32_t>((m_valid > 0 ? m_valid : 0)) * pitch_bytes;
 
         AProdSrc s;
-        s.rsrc = wasp_make_buffer_rsrc(a_base, pitch_bytes, size_bytes);
+        s.rsrc = wasp_make_buffer_rsrc(a_base, pitch_bytes, size_bytes, false);
 
         const uint32_t k_in_panel =
             static_cast<uint32_t>((chunk ^ row_group) * 16);   // swizzled K byte offset
