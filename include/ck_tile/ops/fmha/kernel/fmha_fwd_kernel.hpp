@@ -539,6 +539,150 @@ struct FmhaFwdKernel
         return ck_tile::max(FmhaPipeline::GetSmemSize(), EpiloguePipeline::GetSmemSize());
     }
 
+    CK_TILE_HOST static bool IsSupportedArgument(const Kargs& kargs)
+    {
+        // Q is [seqlen_q, hdim_q] row-major, vectorized along hdim_q; the head dim is covered
+        // by one kSubQKHeaddim tile when Q is loaded once, otherwise by kK0 chunks.
+        if(kargs.hdim_q > FmhaPipeline::kQKHeaddim)
+        {
+            if(ck_tile::EnvIsEnabled(CK_TILE_ENV(CK_TILE_LOGGING)))
+            {
+                CK_TILE_ERROR("hdim_q is larger than the QK head dim this kernel is built for!");
+            }
+            return false;
+        }
+        constexpr ck_tile::index_t kQHeadDimTile =
+            FmhaPipeline::kQLoadOnce ? FmhaPipeline::kSubQKHeaddim : FmhaPipeline::kK0;
+        if(kargs.hdim_q % kQHeadDimTile != 0 && kPadHeadDimQ == false)
+        {
+            if(ck_tile::EnvIsEnabled(CK_TILE_ENV(CK_TILE_LOGGING)))
+            {
+                CK_TILE_ERROR("Can't support hdim_q that is not a multiple of Q head-dim tile "
+                              "size without padding!");
+            }
+            return false;
+        }
+        if(kargs.hdim_q % FmhaPipeline::kAlignmentQ != 0)
+        {
+            if(ck_tile::EnvIsEnabled(CK_TILE_ENV(CK_TILE_LOGGING)))
+            {
+                CK_TILE_ERROR("hdim_q is not a multiple of vector load size for Q tensor!");
+            }
+            return false;
+        }
+        if constexpr(!kIsGroupMode)
+        {
+            if(kargs.seqlen_q % FmhaPipeline::kM0 != 0 && kPadSeqLenQ == false)
+            {
+                if(ck_tile::EnvIsEnabled(CK_TILE_ENV(CK_TILE_LOGGING)))
+                {
+                    CK_TILE_ERROR(
+                        "Can't support seqlen_q that is not a multiple of M0 without padding!");
+                }
+                return false;
+            }
+        }
+
+        // K is [seqlen_k, hdim_q] row-major, vectorized along hdim_q, iterated in kN0 x kK0
+        // tiles.
+        if(kargs.hdim_q % FmhaPipeline::kK0 != 0 && kPadHeadDimQ == false)
+        {
+            if(ck_tile::EnvIsEnabled(CK_TILE_ENV(CK_TILE_LOGGING)))
+            {
+                CK_TILE_ERROR(
+                    "Can't support hdim_q that is not a multiple of K0 without padding!");
+            }
+            return false;
+        }
+        if(kargs.hdim_q % FmhaPipeline::kAlignmentK != 0)
+        {
+            if(ck_tile::EnvIsEnabled(CK_TILE_ENV(CK_TILE_LOGGING)))
+            {
+                CK_TILE_ERROR("hdim_q is not a multiple of vector load size for K tensor!");
+            }
+            return false;
+        }
+        if constexpr(!kIsGroupMode)
+        {
+            if(kargs.seqlen_k % FmhaPipeline::kN0 != 0 && kPadSeqLenK == false)
+            {
+                if(ck_tile::EnvIsEnabled(CK_TILE_ENV(CK_TILE_LOGGING)))
+                {
+                    CK_TILE_ERROR(
+                        "Can't support seqlen_k that is not a multiple of N0 without padding!");
+                }
+                return false;
+            }
+        }
+
+        // V is consumed as [hdim_v, seqlen_k] tiles (kN1 x kK1); which side is vectorized
+        // depends on VLayout: RowMajor V is contiguous along hdim_v, ColumnMajor V along
+        // seqlen_k.
+        if(kargs.hdim_v % FmhaPipeline::kN1 != 0 && kPadHeadDimV == false)
+        {
+            if(ck_tile::EnvIsEnabled(CK_TILE_ENV(CK_TILE_LOGGING)))
+            {
+                CK_TILE_ERROR("Can't support hdim_v that is not a multiple of N1 without "
+                              "padding!");
+            }
+            return false;
+        }
+        if constexpr(std::is_same_v<VLayout, ck_tile::tensor_layout::gemm::RowMajor>)
+        {
+            if(kargs.hdim_v % FmhaPipeline::kAlignmentV != 0)
+            {
+                if(ck_tile::EnvIsEnabled(CK_TILE_ENV(CK_TILE_LOGGING)))
+                {
+                    CK_TILE_ERROR("hdim_v is not a multiple of vector load size for V tensor!");
+                }
+                return false;
+            }
+        }
+        else
+        {
+            if constexpr(!kIsGroupMode)
+            {
+                if(kargs.seqlen_k % FmhaPipeline::kAlignmentV != 0)
+                {
+                    if(ck_tile::EnvIsEnabled(CK_TILE_ENV(CK_TILE_LOGGING)))
+                    {
+                        CK_TILE_ERROR(
+                            "seqlen_k is not a multiple of vector load size for V tensor!");
+                    }
+                    return false;
+                }
+            }
+        }
+
+        // O is [seqlen_q, hdim_v] row-major, vectorized along hdim_v (like GEMM's C RowMajor);
+        // its seqlen_q/hdim_v tile divisibility is the same as Q's seqlen_q and V's hdim_v
+        // checked above.
+        if(kargs.hdim_v % FmhaPipeline::kAlignmentO != 0)
+        {
+            if(ck_tile::EnvIsEnabled(CK_TILE_ENV(CK_TILE_LOGGING)))
+            {
+                CK_TILE_ERROR("hdim_v is not a multiple of vector load size for O tensor!");
+            }
+            return false;
+        }
+
+        // Bias is [seqlen_q, seqlen_k] row-major, vectorized along seqlen_k.
+        if constexpr(BiasEnum == BlockAttentionBiasEnum::ELEMENTWISE_BIAS && !kIsGroupMode)
+        {
+            if(kargs.seqlen_k % FmhaPipeline::kAlignmentBias != 0)
+            {
+                if(ck_tile::EnvIsEnabled(CK_TILE_ENV(CK_TILE_LOGGING)))
+                {
+                    CK_TILE_ERROR("seqlen_k is not a multiple of vector load size for bias "
+                                  "tensor!");
+                }
+                return false;
+            }
+        }
+
+        return true;
+    }
+    
     CK_TILE_DEVICE void operator()(Kargs kargs) const
     {
         // allocate LDS
