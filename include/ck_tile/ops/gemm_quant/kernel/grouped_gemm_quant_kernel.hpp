@@ -112,6 +112,26 @@ struct QuantGemmTransKernelArg
     }
 };
 
+namespace detail {
+template <typename T, typename = void>
+struct gq_has_aquant_group_size : std::false_type
+{
+};
+template <typename T>
+struct gq_has_aquant_group_size<T, std::void_t<typename T::AQuantGroupSize>> : std::true_type
+{
+};
+
+template <typename T, typename = void>
+struct gq_has_bquant_group_size : std::false_type
+{
+};
+template <typename T>
+struct gq_has_bquant_group_size<T, std::void_t<typename T::BQuantGroupSize>> : std::true_type
+{
+};
+} // namespace detail
+
 template <typename TilePartitioner_,
           typename GemmPipeline_,
           typename EpiloguePipeline_,
@@ -143,6 +163,19 @@ struct QuantGroupedGemmKernel
         remove_cvref_t<typename detail::get_bq_data_type_or<GemmPipeline, AccDataType>::type>;
 
     static constexpr auto kQuantType = QuantType_;
+
+    static_assert(kQuantType != QuantType::AQuantGrouped ||
+                      detail::gq_has_aquant_group_size<GemmPipeline>::value,
+                  "QuantType::AQuantGrouped requires an AQuant-capable GemmPipeline "
+                  "(exposing AQuantGroupSize); the plain GemmPipelineAgBgCrCompV3 "
+                  "does not support A-side group quantization");
+    static_assert((kQuantType != QuantType::BQuantGrouped &&
+                   kQuantType != QuantType::ABQuantGrouped) ||
+                      detail::gq_has_bquant_group_size<GemmPipeline>::value,
+                  "QuantType::BQuantGrouped/ABQuantGrouped requires a BQuant-capable "
+                  "GemmPipeline (exposing BQuantGroupSize, e.g. "
+                  "BQuantGemmPipelineAgBgCrCompV3); the plain GemmPipelineAgBgCrCompV3 "
+                  "does not support B-side group quantization");
 
     /// @brief ALayout and ADataType are expected to be scalars, not a tuple.
     static_assert(
@@ -394,11 +427,17 @@ struct QuantGroupedGemmKernel
 
         const index_t num_loop = __builtin_amdgcn_readfirstlane(
             TilePartitioner::GetLoopNum(splitk_batch_offset.splitted_k));
+        const bool has_hot_loop   = GemmPipeline::BlockHasHotloop(num_loop);
         const TailNumber tail_num = GemmPipeline::GetBlockLoopTailNum(num_loop);
 
         // Run GEMM cooperatively by whole workgroup
-        const auto& c_block_tile = GemmPipeline{}.template operator()(
-            a_block_window, b_block_window, bq_block_window, num_loop, tail_num, smem_ptr);
+        const auto& c_block_tile = GemmPipeline{}.template operator()(a_block_window,
+                                                                      b_block_window,
+                                                                      bq_block_window,
+                                                                      num_loop,
+                                                                      has_hot_loop,
+                                                                      tail_num,
+                                                                      smem_ptr);
 
         // Run Epilogue Pipeline with split_k dispatch
         if(kargs.k_batch == 1)
