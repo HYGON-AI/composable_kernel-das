@@ -24,7 +24,7 @@ CK_TILE_DEVICE void gdn_output_tiled_two_rows(
     constexpr ck_tile::index_t kScoreStride =
         kChunkSize + Problem::Config::kScorePadding;
     constexpr ck_tile::index_t kLdsPadding = Problem::Config::kLdsPadding;
-    static_assert(GroupSize == 2 || GroupSize == 4 ||
+    static_assert(GroupSize == 2 || GroupSize == 4 || GroupSize == 3 ||
                   (GroupSize == 1 && Problem::kTwoRows));
     static_assert(kValueTile == 32);
     static_assert((kValueDim / kValueTile) % kValueSplit == 0);
@@ -36,13 +36,12 @@ CK_TILE_DEVICE void gdn_output_tiled_two_rows(
     const ck_tile::index_t physical_qh = group_block / groups_per_qh;
     // Adjacent linear workgroups otherwise walk chunks at a fixed q-head;
     // the 2-MiB H chunk stride repeatedly targets the same low cache-set bits.
-    // Rotate q-head by chunk on long GroupSize=1/2/4 paths to distribute
-    // concurrent H traffic across VL1/TCP cacheline allocators.
+    // Rotate the q head by chunk for every group size; a modulo (rather than a
+    // power-of-two mask) keeps any head count valid. blockIdx.y enumerates
+    // either q heads (GroupSize >= 2) or value heads (GroupSize == 1), and
+    // both layouts span exactly num_qk_heads distinct q heads.
     const ck_tile::index_t qh =
-        (GroupSize == 4 || GroupSize == 2 ||
-         (GroupSize == 1 && Problem::kTwoRows))
-            ? (physical_qh + global_chunk) & (args.num_qk_heads - 1)
-            : physical_qh;
+        (physical_qh + global_chunk) % args.num_qk_heads;
     const ck_tile::index_t vh_base =
         qh * g_ratio + (group_block % groups_per_qh) * GroupSize;
     const ck_tile::index_t tid = ck_tile::get_thread_id();

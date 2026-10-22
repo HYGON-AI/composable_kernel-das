@@ -311,7 +311,7 @@ void launch_output_impl(const PrefillArguments& args, hipStream_t stream)
             launch(gdn::GdnOutputTiledMmacFwdKernel<DataType, 2, 1, false>{},
                    dim3(num_chunks, args.h_qk, 1));
     }
-    else
+    else if constexpr(GroupSize == 4)
     {
         const auto value_split =
             select_group4_value_split(num_chunks, args.h_qk);
@@ -331,6 +331,18 @@ void launch_output_impl(const PrefillArguments& args, hipStream_t stream)
             launch(gdn::GdnOutputTiledMmacFwdKernel<DataType, 4, 1>{},
                    dim3(num_chunks, args.h_qk, 1));
     }
+    else
+    {
+        // Every other group size covers the whole value-head group of one q
+        // head in a single CTA. ValueSplit stays 1: the problem rejects a
+        // value-dimension split for GroupSize != 4.
+        if(preshuffled_h)
+            launch(gdn::GdnOutputTiledMmacFwdKernel<DataType, GroupSize, 1, true>{},
+                   dim3(num_chunks, args.h_qk, 1));
+        else
+            launch(gdn::GdnOutputTiledMmacFwdKernel<DataType, GroupSize, 1>{},
+                   dim3(num_chunks, args.h_qk, 1));
+    }
 }
 
 template <typename DataType>
@@ -340,8 +352,9 @@ void dispatch_output(const PrefillArguments& args, hipStream_t stream)
     {
     case 1: launch_output_impl<DataType, 1>(args, stream); break;
     case 2: launch_output_impl<DataType, 2>(args, stream); break;
+    case 3: launch_output_impl<DataType, 3>(args, stream); break;
     case 4: launch_output_impl<DataType, 4>(args, stream); break;
-    // The prefill runner validates that the head ratio is 1, 2 or 4.
+    // The prefill runner validates that the head ratio is in [1, 4].
     default: break;
     }
 }

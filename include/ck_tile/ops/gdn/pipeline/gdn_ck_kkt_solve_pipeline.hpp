@@ -11,8 +11,6 @@ namespace ck_tile {
 template <typename Policy, bool MaskKRows_ = false, int NumWarps = 4>
 struct GdnKktSolvePipeline
 {
-    static_assert(NumWarps == 1 || NumWarps == 2 || NumWarps == 4);
-
     static constexpr bool MaskKRows = MaskKRows_;
     static constexpr int kChunkSize = Policy::kChunkSize;
     static constexpr int kSubChunk  = Policy::kSubChunk;
@@ -194,35 +192,41 @@ struct GdnKktSolvePipeline
                                             int T,
                                             int stride_A_t) const
     {
-        const index_t warp = get_warp_id();
-        if(warp == 0)
-        {
-            store_full_block<true>(view, A_base, S00, 0, 0, tc, T, stride_A_t);
-            store_full_block<false>(view, A_base, S20, 32, 0, tc, T, stride_A_t);
-            store_full_block<false>(view, A_base, S31, 48, 16, tc, T, stride_A_t);
-            store_zero_full_block(A_base, 0, 16, tc, T, stride_A_t);
-        }
-        if(warp == 1)
-        {
-            store_full_block<true>(view, A_base, S11, 16, 16, tc, T, stride_A_t);
-            store_full_block<false>(view, A_base, S21, 32, 16, tc, T, stride_A_t);
-            store_full_block<false>(view, A_base, S32, 48, 32, tc, T, stride_A_t);
-            store_zero_full_block(A_base, 0, 32, tc, T, stride_A_t);
-        }
-        if(warp == 2)
-        {
-            store_full_block<true>(view, A_base, S22, 32, 32, tc, T, stride_A_t);
-            store_full_block<false>(view, A_base, S10, 16, 0, tc, T, stride_A_t);
-            store_zero_full_block(A_base, 0, 48, tc, T, stride_A_t);
-            store_zero_full_block(A_base, 16, 32, tc, T, stride_A_t);
-        }
-        if(warp == 3)
-        {
-            store_full_block<true>(view, A_base, S33, 48, 48, tc, T, stride_A_t);
-            store_full_block<false>(view, A_base, S30, 48, 0, tc, T, stride_A_t);
-            store_zero_full_block(A_base, 16, 48, tc, T, stride_A_t);
-            store_zero_full_block(A_base, 32, 48, tc, T, stride_A_t);
-        }
+        constexpr int kTiles    = kChunkSize / kSubChunk;
+        constexpr int kNumTiles = kTiles * kTiles;
+        const int warp = static_cast<int>(get_warp_id());
+        // Tiles are claimed round-robin so the schedule follows NumWarps, which
+        // tracks the value-head group handled by one q head.
+        static_for<0, kNumTiles, 1>{}([&](auto blk) {
+            constexpr int b = decltype(blk)::value;
+            constexpr int r = b / kTiles;
+            constexpr int c = b % kTiles;
+            if(b % NumWarps != warp)
+                return;
+            if constexpr(r < c)
+            {
+                // Strictly-upper tiles are never read, but A must be fully
+                // defined for its consumers.
+                store_zero_full_block(A_base,
+                                      r * kSubChunk,
+                                      c * kSubChunk,
+                                      tc,
+                                      T,
+                                      stride_A_t);
+            }
+            else
+            {
+                // The lower triangle is packed as r * (r + 1) / 2 + c.
+                store_full_block<r == c>(view,
+                                         A_base,
+                                         r * (r + 1) / 2 + c,
+                                         r * kSubChunk,
+                                         c * kSubChunk,
+                                         tc,
+                                         T,
+                                         stride_A_t);
+            }
+        });
     }
 
     CK_TILE_DEVICE RegCVec scale_kkt_block(RegCVec c,
