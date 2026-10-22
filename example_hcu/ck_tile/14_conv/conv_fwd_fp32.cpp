@@ -184,6 +184,12 @@ bool run_grouped_conv_fwd(const ck_tile::conv::ConvParam& conv_param,
 
     auto kernel_args = Kernel::MakeKernelArgs(host_args);
 
+    if(!Kernel::IsSupportedArgument(host_args, kernel_args))
+    {
+        throw std::runtime_error(
+            "wrong! conv_fwd with the specified parameters does not support this Conv problem");
+    }
+    
     const auto grid_size =
         kernel_args.tile_partitioner.CalculateGridSize() * conv_param.G_;
 
