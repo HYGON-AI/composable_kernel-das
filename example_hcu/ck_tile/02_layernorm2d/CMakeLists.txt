@@ -43,6 +43,12 @@ list(APPEND EXAMPLE_LAYERNORM2D_FWD_COMPILE_OPTIONS -Wno-undefined-func-template
 
 target_compile_options(${EXAMPLE_LAYERNORM2D_FWD} PRIVATE ${EXAMPLE_LAYERNORM2D_FWD_COMPILE_OPTIONS})
 
+# Match AITER JIT: gfx946 requires the multi-die HIP SDK and compiles both launch
+# paths. The runtime device properties decide whether to use multi-die launch.
+if("gfx946" IN_LIST GPU_TARGETS OR "gfx946" IN_LIST CMAKE_HIP_ARCHITECTURES)
+  target_compile_definitions(${EXAMPLE_LAYERNORM2D_FWD} PRIVATE CK_TILE_LAYERNORM_ENABLE_MULTIDIE=1)
+endif()
+
 # TODO: we have to turn off this global prop, otherwise the progress bar generated
 # by cmake will print too many files, execvp: /bin/sh: Argument list too long
 # however, this property may affect global

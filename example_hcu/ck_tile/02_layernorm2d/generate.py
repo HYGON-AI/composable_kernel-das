@@ -115,6 +115,9 @@ struct layernorm2d_fwd_traits_
 
     static constexpr ck_tile::index_t Repeat_M = Repeat_M_;
     static constexpr ck_tile::index_t Repeat_N = Repeat_N_;
+    static constexpr ck_tile::index_t ThreadPerBlock_M = ThreadPerBlock_M_;
+    static constexpr ck_tile::index_t ThreadPerBlock_N = ThreadPerBlock_N_;
+    static constexpr ck_tile::index_t Vector_N = Vector_N_;
 
     static constexpr ck_tile::index_t Block_M = Repeat_M_ * ThreadPerBlock_M_;
     static constexpr ck_tile::index_t Block_N = Repeat_N_ * ThreadPerBlock_N_ * Vector_N_;
@@ -180,6 +183,7 @@ using traits_ = layernorm2d_fwd_traits_<XDataType_,
 
 #include <ck_tile/core.hpp>
 #include "layernorm2d_fwd.hpp"
+#include "layernorm2d_fwd_launch.hpp"
 #include <ck_tile/ops/epilogue.hpp>
 #include <iostream>
 
@@ -193,6 +197,26 @@ using A = layernorm2d_fwd_args;
 template <typename Traits_>
 float layernorm2d_fwd_(const S& s, A a)
 {{
+    // gfx946: keep the same tile and vector width with four waves instead of
+    // sixteen. This removes the private-memory spills observed in the 16-wave
+    // norm reduction on the target SDK and avoids the sbx2 correctness failure.
+    // Runtime selection leaves the existing gfx936/gfx938 instances unchanged.
+    if constexpr(Traits_::ThreadPerBlock_N == 1024)
+    {{
+        if(ck_tile::layernorm2d_detail::is_gfx946())
+        {{
+            using Gfx946Traits = traits_<typename Traits_::XDataType,
+                                         typename Traits_::YDataType,
+                                         typename Traits_::SmoothScaleDataType,
+                                         typename Traits_::YScaleDataType,
+                                         Traits_::Repeat_M, Traits_::Repeat_N * 4,
+                                         Traits_::ThreadPerBlock_M, 256, Traits_::Vector_N,
+                                         Traits_::kPadN, Traits_::kSaveMeanInvStd,
+                                         Traits_::kFastFDiv, Traits_::kWelford, Traits_::kTwoPass,
+                                         Traits_::kXbias, Traits_::kFusedAdd, Traits_::kFusedQuant>;
+            return layernorm2d_fwd_<Gfx946Traits>(s, a);
+        }}
+    }}
     using XDataType = typename Traits_::XDataType;
     using YDataType = typename Traits_::YDataType;
     using SmoothScaleDataType = typename Traits_::SmoothScaleDataType;
@@ -248,7 +272,7 @@ float layernorm2d_fwd_(const S& s, A a)
         std::cout << ", " << Kernel::GetName() << std::flush;
 
     return ck_tile::launch_kernel(
-        s, ck_tile::make_kernel<blocks.x, kBlockPerCu>(Kernel{{}}, grids, blocks, 0, kargs));
+        s, ck_tile::make_layernorm2d_fwd_kernel<blocks.x, kBlockPerCu>(Kernel{{}}, grids, blocks, 0, kargs));
 }}
 
 """
