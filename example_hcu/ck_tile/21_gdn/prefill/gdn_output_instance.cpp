@@ -36,8 +36,8 @@ struct GdnOutputSingletonMmacKernel
                     type_convert<float>(qdot[number<1>{}])*type_convert<float>(kdot[number<1>{}]);
         static_for<0,6,1>{}([&](auto j){score+=Core::shuffle(score,lane^(1<<j));});
         const float gate=a.g[64*8+vh];
-        const float eg=__builtin_amdgcn_exp2f(gate),eng=__builtin_amdgcn_exp2f(-gate);
-        const float weight=type_convert<float>(gdn_type_convert<DataType>(score*eg*eng));
+        const float eg=__builtin_amdgcn_exp2f(gate);
+        const float weight=type_convert<float>(gdn_type_convert<DataType>(score*gdn_gate_delta(gate,gate,true)));
         C hist[2];hist[0]=C{0.f};hist[1]=C{0.f};
         static_for<0,4,1>{}([&](auto p){
             thread_buffer<DataType,8> q;

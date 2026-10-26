@@ -232,8 +232,8 @@ struct GdnKktSolvePipeline
     CK_TILE_DEVICE RegCVec scale_kkt_block(RegCVec c,
                                            int row_base,
                                            int col_base,
-                                           float row_factor,
-                                           float col_factor,
+                                           float g_self,
+                                           float beta_self,
                                            int tc,
                                            int T) const
     {
@@ -244,14 +244,17 @@ struct GdnKktSolvePipeline
         const index_t lane = get_lane_id();
         const index_t col = col_base + (lane & 15);
         const index_t m_group = (lane >> 4) & 3;
-        const float cf = warp_shuffle(col_factor, col);
+        const float g_col = warp_shuffle(g_self, col);
         static_for<0, 4, 1>{}([&](auto e) {
             const index_t r = row_base + m_group + e * 4;
-            const float rf = warp_shuffle(row_factor, r);
+            // Both shuffles stay unconditional: ds_bpermute reads lanes that the
+            // masked branch may have turned inactive.
+            const float g_row    = warp_shuffle(g_self, r);
+            const float beta_row = warp_shuffle(beta_self, r);
             if(tc + r < T && tc + col < T &&
                (row_base != col_base || r > col))
             {
-                u.e[e] *= rf * cf;
+                u.e[e] *= gdn_gate_delta(g_row, g_col, true) * beta_row;
             }
             else
             {
@@ -264,8 +267,8 @@ struct GdnKktSolvePipeline
     template <int ActiveBlocks>
     CK_TILE_DEVICE void compute_kkt_active_reg(const DataType* __restrict__ k_base,
                                                int stride_k_t,
-                                               float row_factor,
-                                               float col_factor,
+                                               float g_self,
+                                               float beta_self,
                                                int tc,
                                                int T,
                                                RegLowerBlocks& b) const
@@ -319,24 +322,24 @@ struct GdnKktSolvePipeline
             }
         });
 
-        b.s00 = scale_kkt_block(b.s00, 0, 0, row_factor, col_factor, tc, T);
+        b.s00 = scale_kkt_block(b.s00, 0, 0, g_self, beta_self, tc, T);
         if constexpr(ActiveBlocks >= 2)
         {
-            b.s10 = scale_kkt_block(b.s10, 16, 0, row_factor, col_factor, tc, T);
-            b.s11 = scale_kkt_block(b.s11, 16, 16, row_factor, col_factor, tc, T);
+            b.s10 = scale_kkt_block(b.s10, 16, 0, g_self, beta_self, tc, T);
+            b.s11 = scale_kkt_block(b.s11, 16, 16, g_self, beta_self, tc, T);
         }
         if constexpr(ActiveBlocks >= 3)
         {
-            b.s20 = scale_kkt_block(b.s20, 32, 0, row_factor, col_factor, tc, T);
-            b.s21 = scale_kkt_block(b.s21, 32, 16, row_factor, col_factor, tc, T);
-            b.s22 = scale_kkt_block(b.s22, 32, 32, row_factor, col_factor, tc, T);
+            b.s20 = scale_kkt_block(b.s20, 32, 0, g_self, beta_self, tc, T);
+            b.s21 = scale_kkt_block(b.s21, 32, 16, g_self, beta_self, tc, T);
+            b.s22 = scale_kkt_block(b.s22, 32, 32, g_self, beta_self, tc, T);
         }
         if constexpr(ActiveBlocks >= 4)
         {
-            b.s30 = scale_kkt_block(b.s30, 48, 0, row_factor, col_factor, tc, T);
-            b.s31 = scale_kkt_block(b.s31, 48, 16, row_factor, col_factor, tc, T);
-            b.s32 = scale_kkt_block(b.s32, 48, 32, row_factor, col_factor, tc, T);
-            b.s33 = scale_kkt_block(b.s33, 48, 48, row_factor, col_factor, tc, T);
+            b.s30 = scale_kkt_block(b.s30, 48, 0, g_self, beta_self, tc, T);
+            b.s31 = scale_kkt_block(b.s31, 48, 16, g_self, beta_self, tc, T);
+            b.s32 = scale_kkt_block(b.s32, 48, 32, g_self, beta_self, tc, T);
+            b.s33 = scale_kkt_block(b.s33, 48, 48, g_self, beta_self, tc, T);
         }
     }
 
@@ -344,15 +347,15 @@ struct GdnKktSolvePipeline
                                                   int row_base,
                                                   int col_base,
                                                   int stride_k_t,
-                                                  float row_factor,
-                                                  float col_factor,
+                                                  float g_self,
+                                                  float beta_self,
                                                   int tc,
                                                   int T) const
     {
         using Kkt16 = GdnKktWarpKkt16<DataType>;
         return scale_kkt_block(Kkt16::template compute<false>(
                                    k_base, stride_k_t, row_base, col_base, tc, T),
-                               row_base, col_base, row_factor, col_factor, tc, T);
+                               row_base, col_base, g_self, beta_self, tc, T);
     }
 
     CK_TILE_DEVICE void compute_kkt_pair_reg(const DataType* __restrict__ k_base,
@@ -360,8 +363,8 @@ struct GdnKktSolvePipeline
                                              int col_base0,
                                              int col_base1,
                                              int stride_k_t,
-                                             float row_factor,
-                                             float col_factor,
+                                             float g_self,
+                                             float beta_self,
                                              int tc,
                                              int T,
                                              RegCVec& c0,
@@ -383,9 +386,9 @@ struct GdnKktSolvePipeline
             impl(c1, a, b1);
         });
         c0 = scale_kkt_block(c0, row_base, col_base0,
-                             row_factor, col_factor, tc, T);
+                             g_self, beta_self, tc, T);
         c1 = scale_kkt_block(c1, row_base, col_base1,
-                             row_factor, col_factor, tc, T);
+                             g_self, beta_self, tc, T);
     }
 
     CK_TILE_DEVICE void store_diag_work(float* __restrict__ work, const RegCVec& c) const
@@ -690,8 +693,8 @@ struct GdnKktSolvePipeline
                                           DataType* __restrict__ A_base,
                                           int stride_k_t,
                                           int stride_A_t,
-                                          float row_factor,
-                                          float col_factor,
+                                          float g_self,
+                                          float beta_self,
                                           int tc,
                                           int T,
                                           float* __restrict__ diag_work0,
@@ -699,7 +702,7 @@ struct GdnKktSolvePipeline
     {
         RegLowerBlocks b;
         compute_kkt_active_reg<ActiveBlocks>(
-            k_base, stride_k_t, row_factor, col_factor, tc, T, b);
+            k_base, stride_k_t, g_self, beta_self, tc, T, b);
         invert_active_diags<ActiveBlocks>(b, diag_work0, diag_work1);
         solve_merge_reg<ActiveBlocks>(b);
         store_reg_output<ActiveBlocks>(b, A_base, tc, T, stride_A_t);
@@ -722,14 +725,15 @@ struct GdnKktSolvePipeline
         const DataType* k_base = k_global + tc * stride_k_t + ih * kHeadDim;
 
         const index_t lane = get_lane_id();
-        float row_factor = 0.0f;
-        float col_factor = 0.0f;
+        // g_cum is always produced in log2 units by the cumsum stage, so the
+        // gate only ever needs scale_kkt_block's exp2 form here.
+        (void)use_exp2;
+        float g_self    = 0.0f;
+        float beta_self = 0.0f;
         if(tc + lane < T)
         {
-            const float g = g_global[(tc + lane) * stride_g_t + ivh];
-            row_factor = (use_exp2 ? __builtin_amdgcn_exp2f(g) : expf(g)) *
-                         b_global[(tc + lane) * stride_g_t + ivh];
-            col_factor = use_exp2 ? __builtin_amdgcn_exp2f(-g) : expf(-g);
+            g_self    = g_global[(tc + lane) * stride_g_t + ivh];
+            beta_self = b_global[(tc + lane) * stride_g_t + ivh];
         }
 
         DataType* A_base = A_global + tc * stride_A_t + ivh * kChunkSize;
@@ -747,8 +751,8 @@ struct GdnKktSolvePipeline
                                          A_base,
                                          stride_k_t,
                                          stride_A_t,
-                                         row_factor,
-                                         col_factor,
+                                         g_self,
+                                         beta_self,
                                          tc,
                                          T,
                                          diag_work0,
@@ -760,8 +764,8 @@ struct GdnKktSolvePipeline
                                          A_base,
                                          stride_k_t,
                                          stride_A_t,
-                                         row_factor,
-                                         col_factor,
+                                         g_self,
+                                         beta_self,
                                          tc,
                                          T,
                                          diag_work0,
@@ -773,8 +777,8 @@ struct GdnKktSolvePipeline
                                          A_base,
                                          stride_k_t,
                                          stride_A_t,
-                                         row_factor,
-                                         col_factor,
+                                         g_self,
+                                         beta_self,
                                          tc,
                                          T,
                                          diag_work0,
@@ -786,8 +790,8 @@ struct GdnKktSolvePipeline
                                          A_base,
                                          stride_k_t,
                                          stride_A_t,
-                                         row_factor,
-                                         col_factor,
+                                         g_self,
+                                         beta_self,
                                          tc,
                                          T,
                                          diag_work0,
@@ -799,17 +803,17 @@ struct GdnKktSolvePipeline
 
         RegLowerBlocks b;
         b.s00 = compute_kkt_single_reg(k_base, 0, 0, stride_k_t,
-                                       row_factor, col_factor, tc, T);
+                                       g_self, beta_self, tc, T);
         compute_kkt_pair_reg(k_base, 16, 0, 16, stride_k_t,
-                             row_factor, col_factor, tc, T, b.s10, b.s11);
+                             g_self, beta_self, tc, T, b.s10, b.s11);
         compute_kkt_pair_reg(k_base, 32, 0, 32, stride_k_t,
-                             row_factor, col_factor, tc, T, b.s20, b.s22);
+                             g_self, beta_self, tc, T, b.s20, b.s22);
         b.s21 = compute_kkt_single_reg(k_base, 32, 16, stride_k_t,
-                                       row_factor, col_factor, tc, T);
+                                       g_self, beta_self, tc, T);
         compute_kkt_pair_reg(k_base, 48, 0, 16, stride_k_t,
-                             row_factor, col_factor, tc, T, b.s30, b.s31);
+                             g_self, beta_self, tc, T, b.s30, b.s31);
         compute_kkt_pair_reg(k_base, 48, 32, 48, stride_k_t,
-                             row_factor, col_factor, tc, T, b.s32, b.s33);
+                             g_self, beta_self, tc, T, b.s32, b.s33);
         invert_active_diags<4>(b, diag_work0, diag_work1);
         solve_merge_reg<4>(b);
         store_reg_output<4>(b, A_base, tc, T, stride_A_t);

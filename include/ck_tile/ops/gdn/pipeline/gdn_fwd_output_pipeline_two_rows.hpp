@@ -233,7 +233,9 @@ CK_TILE_DEVICE void gdn_output_tiled_two_rows(
                     gate = args.g[static_cast<int64_t>(token_begin + idx) *
                                       args.num_value_heads +
                                   vh];
-                gate_lds[idx] = idx < valid_tokens ? __builtin_amdgcn_exp2f(-gate) : 0.0f;
+                // Store the raw log2 gate: the score pair below uses the
+                // row/col delta, so strong decay cannot form 0 * inf.
+                gate_lds[idx] = idx < valid_tokens ? gate : 0.0f;
             }
             else
             {
@@ -243,7 +245,7 @@ CK_TILE_DEVICE void gdn_output_tiled_two_rows(
                     gate = args.g[static_cast<int64_t>(token_begin + row) *
                                       args.num_value_heads +
                                   vh];
-                gate_lds[idx] = row < valid_tokens ? __builtin_amdgcn_exp2f(gate) : 0.0f;
+                gate_lds[idx] = row < valid_tokens ? gate : 0.0f;
             }
         }
         ck_tile::block_sync_lds();
@@ -261,8 +263,9 @@ CK_TILE_DEVICE void gdn_output_tiled_two_rows(
                 const ck_tile::index_t global_row = row_begin + row;
                 float value = 0.0f;
                 if(global_row < valid_tokens && col < valid_tokens && col <= global_row)
-                    value = score_output[idx] * gate_lds[kChunkSize + global_row] *
-                            gate_lds[col];
+                    value = score_output[idx] *
+                            ck_tile::gdn_gate_delta(
+                                gate_lds[kChunkSize + global_row], gate_lds[col], true);
                 gated_score(idx) = value;
             });
             auto score_store_tile = ck_tile::gdn_cast_tile<DataType>(gated_score);
@@ -309,7 +312,7 @@ CK_TILE_DEVICE void gdn_output_tiled_two_rows(
                     const ck_tile::index_t row = x[ck_tile::number<0>{}];
                     q_gated(dstr_idx) = gdn_output_cast_from_float<DataType>(
                         ck_tile::type_convert<float>(q_for_h[dstr_idx]) *
-                        gate_lds[kChunkSize + row_begin + row]);
+                        __builtin_amdgcn_exp2f(gate_lds[kChunkSize + row_begin + row]));
                 });
             });
             return q_gated;
@@ -429,7 +432,8 @@ CK_TILE_DEVICE void gdn_output_tiled_two_rows(
                     ck_tile::sweep_tile(output_float, [&](auto idx) {
                         const auto coord=ck_tile::get_x_indices_from_distributed_indices(
                             output_float.get_tile_distribution(),idx);
-                        output_float(idx) *= gate_lds[kChunkSize+row_begin+coord[ck_tile::number<0>{}]];
+                        output_float(idx) *= __builtin_amdgcn_exp2f(
+                            gate_lds[kChunkSize+row_begin+coord[ck_tile::number<0>{}]]);
                     });
                 }
                 ck_tile::tile_elementwise_inout(

@@ -236,7 +236,9 @@ CK_TILE_DEVICE void GdnOutputFwdPipeline<Problem>::operator()(Kargs args) const
                 {
                     gate = args.g[static_cast<int64_t>(token_begin + t_id) * args.num_value_heads + vh];
                 }
-                gate_lds[idx] = t_id < valid_tokens ? __builtin_amdgcn_exp2f(-gate) : 0.0f;
+                // Store the raw log2 gate: the score pair below uses the
+                // row/col delta, so strong decay cannot form 0 * inf.
+                gate_lds[idx] = t_id < valid_tokens ? gate : 0.0f;
             }
             else
             {
@@ -247,7 +249,7 @@ CK_TILE_DEVICE void GdnOutputFwdPipeline<Problem>::operator()(Kargs args) const
                 {
                     gate = args.g[static_cast<int64_t>(token_begin + row) * args.num_value_heads + vh];
                 }
-                gate_lds[idx] = row < valid_tokens ? __builtin_amdgcn_exp2f(gate) : 0.0f;
+                gate_lds[idx] = row < valid_tokens ? gate : 0.0f;
             }
         }
         ck_tile::block_sync_lds();
@@ -265,7 +267,8 @@ CK_TILE_DEVICE void GdnOutputFwdPipeline<Problem>::operator()(Kargs args) const
             float value = 0.0f;
             if(global_row < valid_tokens && col < valid_tokens && col <= global_row)
             {
-                value = score_output[idx] * gate_lds[kChunkSize + row] * gate_lds[col];
+                value = score_output[idx] *
+                        ck_tile::gdn_gate_delta(gate_lds[kChunkSize + row], gate_lds[col], true);
             }
             gated_score(idx) = value;
         });
@@ -309,7 +312,8 @@ CK_TILE_DEVICE void GdnOutputFwdPipeline<Problem>::operator()(Kargs args) const
                     q_gated.get_tile_distribution(), dstr_idx);
                 const ck_tile::index_t row = x[ck_tile::number<0>{}];
                 q_gated(dstr_idx) = gdn_output_cast_from_float<DataType>(
-                    ck_tile::type_convert<float>(q_for_h[dstr_idx]) * gate_lds[kChunkSize + row]);
+                    ck_tile::type_convert<float>(q_for_h[dstr_idx]) *
+                    __builtin_amdgcn_exp2f(gate_lds[kChunkSize + row]));
             });
         });
 

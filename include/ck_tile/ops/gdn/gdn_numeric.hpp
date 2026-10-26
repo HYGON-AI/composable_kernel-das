@@ -28,6 +28,21 @@ CK_TILE_DEVICE uint16_t gdn_float_to_bf16_rne(float value)
 #endif
 }
 
+// Chunk-local gate factor between two tokens of the same chunk.
+//
+// The consumers (KKT construction and the output score) always mask down to the
+// lower triangle, i.e. g_row <= g_col, so evaluating exp(g_row - g_col) keeps the
+// exponent <= 0. Applying the gate as two separable factors exp(g_row) and
+// exp(-g_col) instead lets the column factor overflow to +inf once the chunk's
+// cumulative decay passes the FP32 range (|g_cum| > 128 in log2 units), and the
+// underflowed row factor then turns the product into 0 * inf = NaN.
+CK_TILE_DEVICE float gdn_gate_delta(float g_row, float g_col, bool use_exp2)
+{
+    const float delta   = g_row - g_col;
+    const float clamped = delta < 0.0f ? delta : 0.0f;
+    return use_exp2 ? __builtin_amdgcn_exp2f(clamped) : expf(clamped);
+}
+
 template <typename Dst, typename Src>
 CK_TILE_DEVICE Dst gdn_type_convert(Src value)
 {
