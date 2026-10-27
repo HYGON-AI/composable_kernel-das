@@ -127,25 +127,39 @@ CK_TILE_DEVICE void gdn_output_tiled_two_rows(
     float* const gate_lds = reinterpret_cast<float*>(
         shared_lds_bytes + kGateLdsOffsetBytes);
 
+    // Both row tiles are loaded up front, but a partial tail chunk can leave the
+    // second one entirely past the sequence end.  Root the view at the last
+    // addressable row and bound it by the rows that actually belong to this
+    // sequence: the right pad turns the surplus lanes into invalid lanes, so the
+    // masked load never reaches memory past `eos`.  Rows outside the sequence
+    // are dropped by the epilogue guard (`valid_tokens > kRowTile`).
     auto load_q = [&](ck_tile::index_t row_begin, auto tile_seed) {
+        const ck_tile::index_t q_row_base =
+            row_begin < valid_tokens ? row_begin : valid_tokens - 1;
+        const ck_tile::index_t q_rows = valid_tokens - q_row_base;
         const DataType* q_base =
             args.q +
-            (static_cast<int64_t>(token_begin + row_begin) * args.num_qk_heads + qh) *
+            (static_cast<int64_t>(token_begin + q_row_base) * args.num_qk_heads + qh) *
                 kHeadDim;
         auto q_view = ck_tile::make_naive_tensor_view<ck_tile::address_space_enum::global>(
             q_base,
-            ck_tile::make_tuple(ck_tile::number<kRowTile>{},
-                                ck_tile::number<kHeadDim>{}),
+            ck_tile::make_tuple(q_rows, ck_tile::number<kHeadDim>{}),
             ck_tile::make_tuple(args.num_qk_heads * kHeadDim,
                                 ck_tile::number<1>{}),
             ck_tile::number<8>{},
             ck_tile::number<1>{});
-        auto q_window = ck_tile::make_tile_window(
+        auto q_padded_view = ck_tile::pad_tensor_view(
             q_view,
+            ck_tile::make_tuple(ck_tile::number<kRowTile>{}, ck_tile::number<kHeadDim>{}),
+            ck_tile::sequence<true, false>{});
+        auto q_window = ck_tile::make_tile_window(
+            q_padded_view,
             ck_tile::make_tuple(ck_tile::number<kRowTile>{}, ck_tile::number<kHeadDim>{}),
             ck_tile::multi_index<2>{0, 0},
             tile_seed.get_tile_distribution());
-        return ck_tile::load_tile(q_window);
+        if(full_chunk)
+            return ck_tile::load_tile(q_window, ck_tile::bool_constant<false>{});
+        return ck_tile::load_tile(q_window, ck_tile::bool_constant<true>{});
     };
 
     // Full K is contiguous and loaded once into the native QK B distribution.
