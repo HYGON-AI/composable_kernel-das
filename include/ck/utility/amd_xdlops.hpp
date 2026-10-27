@@ -12,6 +12,27 @@
 
 namespace ck {
 
+// FP8 uses the native HCU accumulator layout, handled by XdlopsGemm/CShuffle.
+// Do not add the MFMA register permutation used by unmodified upstream CK here.
+template <index_t MPerWave, index_t NPerWave>
+struct intrin_mfma_f32_16x16x32_fp8_fp8;
+
+template <>
+struct intrin_mfma_f32_16x16x32_fp8_fp8<16, 16>
+{
+    template <class FloatC>
+    __device__ static void Run(const fp8x8_t& a, const fp8x8_t& b, FloatC& c)
+    {
+#if defined(__gfx92a__) || defined(__gfx938__) || defined(__gfx946__)
+        intrin_mmac_f32_16x16x32f8_f8(bit_cast<int32x2_t>(a), bit_cast<int32x2_t>(b), c);
+#elif defined(__HIP_DEVICE_COMPILE__)
+        static_assert(sizeof(FloatC) == 0, "FP8 XDL 16x16 requires gfx92a, gfx938 or gfx946");
+#else
+        swallow(a, b, c);
+#endif
+    }
+};
+
 #if defined(__gfx928__) || defined(__gfx92a__) || defined(__gfx936__) || defined(__gfx938__)
 __device__ inline int32x2_t intrin_mmac_repack_16x16_input_x2(int32_t packed_input)
 {
