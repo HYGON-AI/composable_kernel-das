@@ -115,10 +115,11 @@ int run(const ck_tile::ArgParser& parser)
        head_dim != gdn_example::kSupportedHeadDim ||
        h_qk <= 0 || h_v <= 0 ||
        h_v % h_qk != 0 ||
-       (h_v / h_qk != 1 && h_v / h_qk != 2 && h_v / h_qk != 4))
+       (h_v / h_qk != 1 && h_v / h_qk != 2 && h_v / h_qk != 3 &&
+        h_v / h_qk != 4))
     {
         std::cerr
-            << "GDN requires t,h,hv > 0, head_dim=128, hv/h in {1,2,4}; "
+            << "GDN requires t,h,hv > 0, head_dim=128, hv/h in {1,2,3,4}; "
                "varlen sequence lengths must be positive\n";
         return 2;
     }

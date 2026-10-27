@@ -42,6 +42,10 @@ struct BatchedGemmKernel
 
     static constexpr index_t KernelBlockSize = GemmPipeline::BlockSize;
 
+    // Target device limits: wave64, 256 VGPRs per thread, 64KB LDS per workgroup.
+    static constexpr index_t kTargetMaxVgprPerThread = 256;
+    static constexpr index_t kTargetMaxSmemBytes     = 64 * 1024;
+
     struct Kargs
     {
         const void* p_a;
@@ -84,6 +88,165 @@ struct BatchedGemmKernel
     CK_TILE_HOST_DEVICE static constexpr index_t GetSmemSize()
     {
         return max(GemmPipeline::GetSmemSize(), EpiloguePipeline::GetSmemSize());
+    }
+
+    
+    CK_TILE_HOST_DEVICE static constexpr index_t GetEstimatedVgprPerThread()
+    {
+        using AccDataType = remove_cvref_t<typename GemmPipeline::CDataType>;
+
+        constexpr index_t acc_bytes = TilePartitioner::kM * TilePartitioner::kN *
+                                      static_cast<index_t>(sizeof(AccDataType));
+        constexpr index_t a_bytes = TilePartitioner::kM * TilePartitioner::kK *
+                                    static_cast<index_t>(sizeof(ADataType)) /
+                                    numeric_traits<ADataType>::PackedSize;
+        constexpr index_t b_bytes = TilePartitioner::kN * TilePartitioner::kK *
+                                    static_cast<index_t>(sizeof(BDataType)) /
+                                    numeric_traits<BDataType>::PackedSize;
+
+        return integer_divide_ceil(acc_bytes + a_bytes + b_bytes, KernelBlockSize * 4);
+    }
+
+    CK_TILE_HOST static bool IsSupportedArgument(const Kargs& kargs)
+    {
+        if constexpr(GetSmemSize() > kTargetMaxSmemBytes)
+        {
+            if(ck_tile::EnvIsEnabled(CK_TILE_ENV(CK_TILE_LOGGING)))
+            {
+                CK_TILE_ERROR("LDS usage ",
+                              GetSmemSize(),
+                              " bytes exceeds the device limit of ",
+                              kTargetMaxSmemBytes,
+                              " bytes!");
+            }
+            return false;
+        }
+
+        if constexpr(GetEstimatedVgprPerThread() > kTargetMaxVgprPerThread)
+        {
+            if(ck_tile::EnvIsEnabled(CK_TILE_ENV(CK_TILE_LOGGING)))
+            {
+                CK_TILE_ERROR("Estimated VGPR usage ",
+                              GetEstimatedVgprPerThread(),
+                              " per thread exceeds the device limit of ",
+                              kTargetMaxVgprPerThread,
+                              "!");
+            }
+            return false;
+        }
+
+        // Vector-load divisibility is only required on the paths this kernel actually vectorizes
+        // (A RowMajor along K, B ColumnMajor along K, C RowMajor along N). Each batch starts at
+        // p + batch * batch_stride, so the batch strides must keep that alignment as well.
+        if constexpr(std::is_same_v<ALayout, tensor_layout::gemm::RowMajor>)
+        {
+            if(kargs.K % TilePartitioner::kK != 0 && GemmPipeline::kPadK == false)
+            {
+                if(ck_tile::EnvIsEnabled(CK_TILE_ENV(CK_TILE_LOGGING)))
+                {
+                    CK_TILE_ERROR(
+                        "Can't support K that is not a multiple of KPerBlock without padding!");
+                }
+                return false;
+            }
+            if(kargs.K % GemmPipeline::VectorSizeA != 0 ||
+               kargs.stride_A % GemmPipeline::VectorSizeA != 0 ||
+               kargs.batch_stride_A % GemmPipeline::VectorSizeA != 0)
+            {
+                if(ck_tile::EnvIsEnabled(CK_TILE_ENV(CK_TILE_LOGGING)))
+                {
+                    CK_TILE_ERROR("K, stride_A or batch_stride_A is not a multiple of vector load "
+                                  "size for A tensor!");
+                }
+                return false;
+            }
+        }
+        else
+        {
+            if(kargs.M % TilePartitioner::kM != 0 && GemmPipeline::kPadM == false)
+            {
+                if(ck_tile::EnvIsEnabled(CK_TILE_ENV(CK_TILE_LOGGING)))
+                {
+                    CK_TILE_ERROR(
+                        "Can't support M that is not a multiple of MPerBlock without padding!");
+                }
+                return false;
+            }
+        }
+
+        if constexpr(std::is_same_v<BLayout, tensor_layout::gemm::RowMajor>)
+        {
+            if(kargs.N % TilePartitioner::kN != 0 && GemmPipeline::kPadN == false)
+            {
+                if(ck_tile::EnvIsEnabled(CK_TILE_ENV(CK_TILE_LOGGING)))
+                {
+                    CK_TILE_ERROR(
+                        "Can't support N that is not a multiple of NPerBlock without padding!");
+                }
+                return false;
+            }
+        }
+        else
+        {
+            if(kargs.K % TilePartitioner::kK != 0 && GemmPipeline::kPadK == false)
+            {
+                if(ck_tile::EnvIsEnabled(CK_TILE_ENV(CK_TILE_LOGGING)))
+                {
+                    CK_TILE_ERROR(
+                        "Can't support K that is not a multiple of KPerBlock without padding!");
+                }
+                return false;
+            }
+            if(kargs.K % GemmPipeline::VectorSizeB != 0 ||
+               kargs.stride_B % GemmPipeline::VectorSizeB != 0 ||
+               kargs.batch_stride_B % GemmPipeline::VectorSizeB != 0)
+            {
+                if(ck_tile::EnvIsEnabled(CK_TILE_ENV(CK_TILE_LOGGING)))
+                {
+                    CK_TILE_ERROR("K, stride_B or batch_stride_B is not a multiple of vector load "
+                                  "size for B tensor!");
+                }
+                return false;
+            }
+        }
+
+        if constexpr(std::is_same_v<CLayout, tensor_layout::gemm::RowMajor>)
+        {
+            if(kargs.N % TilePartitioner::kN != 0 && GemmPipeline::kPadN == false)
+            {
+                if(ck_tile::EnvIsEnabled(CK_TILE_ENV(CK_TILE_LOGGING)))
+                {
+                    CK_TILE_ERROR(
+                        "Can't support N that is not a multiple of NPerBlock without padding!");
+                }
+                return false;
+            }
+            if(kargs.N % GemmPipeline::VectorSizeC != 0 ||
+               kargs.stride_C % GemmPipeline::VectorSizeC != 0 ||
+               kargs.batch_stride_C % GemmPipeline::VectorSizeC != 0)
+            {
+                if(ck_tile::EnvIsEnabled(CK_TILE_ENV(CK_TILE_LOGGING)))
+                {
+                    CK_TILE_ERROR("N, stride_C or batch_stride_C is not a multiple of vector store "
+                                  "size for C tensor!");
+                }
+                return false;
+            }
+        }
+        else
+        {
+            if(kargs.M % TilePartitioner::kM != 0 && GemmPipeline::kPadM == false)
+            {
+                if(ck_tile::EnvIsEnabled(CK_TILE_ENV(CK_TILE_LOGGING)))
+                {
+                    CK_TILE_ERROR(
+                        "Can't support M that is not a multiple of MPerBlock without padding!");
+                }
+                return false;
+            }
+        }
+
+        return true;
     }
 
     CK_TILE_DEVICE void operator()(Kargs kargs) const

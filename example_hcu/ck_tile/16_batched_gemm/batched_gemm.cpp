@@ -104,6 +104,12 @@ bool run(const ck_tile::ArgParser& parser)
     const auto kargs      = Kernel::MakeKargs(args);
     const dim3 grid       = Kernel::GridSize(M, N, batch);
     constexpr dim3 block  = Kernel::BlockSize();
+
+    if(!Kernel::IsSupportedArgument(kargs))
+    {
+        throw std::runtime_error("Wrong! Arguments not supported! Skipping gemm!\n");
+    }
+
     const float kernel_ms = ck_tile::launch_kernel(
         ck_tile::stream_config{nullptr, time_kernel, 0, warmup, repeat},
         ck_tile::make_kernel<block.x, 1>(Kernel{}, grid, block, 0, kargs));

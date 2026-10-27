@@ -600,7 +600,7 @@ struct DeviceGroupedGemmMultipleDXdlCShuffleTileLoop
         }
 
         index_t group_count_;
-        const void* p_dev_gemm_args_;
+        const void* p_dev_gemm_args_ = nullptr;
         int occupancy_num_blocks_;
         int gpu_cu_count_;
         const std::vector<GemmDesc>& gemm_descs_;
@@ -742,6 +742,11 @@ struct DeviceGroupedGemmMultipleDXdlCShuffleTileLoop
         bool isWave64             = get_warp_size() == 64;
         for(index_t i = 0; i < arg.group_count_; ++i)
         {
+            // Empty MoE experts are skipped by the device tile loop before any loads.
+            // Their pointers/strides may therefore be placeholders as well.
+            if(arg.gemm_descs_[i].M_ == 0)
+                continue;
+
             std::array<const void*, NumDTensor> placeholder_p_ds_grid{};
             std::array<index_t, NumDTensor> stride_Ds;
             std::copy_n(arg.gemm_descs_[i].stride_Ds_.begin(), NumDTensor, stride_Ds.begin());

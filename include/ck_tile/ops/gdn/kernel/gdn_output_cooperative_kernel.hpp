@@ -42,11 +42,14 @@ struct GdnOutputCooperativeKernel {
         const index_t lane=get_lane_id(),row=row0+lane%16,group=lane/16;
         __shared__ DataType sm[64*Stride];
         const float gate=(!GuardTail || token+lane<a.total_tokens) ? a.g[static_cast<long_index_t>(token+lane)*a.num_value_heads+vh] : 0.f;
-        const float ep=__builtin_amdgcn_exp2f(gate),en=__builtin_amdgcn_exp2f(-gate);
+        // Only the row gate is applied on its own (history term); score pairs use
+        // the row/col delta so strong decay cannot form 0 * inf.
+        const float ep=__builtin_amdgcn_exp2f(gate);
         thread_buffer<DataType,8> q[MR][4];
-        thread_buffer<float,MR> erow;
+        thread_buffer<float,MR> erow,grow;
         static_for<0,MR,1>{}([&](auto m){
             erow(m)=shuffle(ep,row+m*16);
+            grow(m)=shuffle(gate,row+m*16);
             static_for<0,4,1>{}([&](auto p){
                 const auto off=(static_cast<long_index_t>(token+row+m*16)*a.num_qk_heads+qh)*128+p*32+group*8;
                 q[m][p].template set_as<uint32x4_t>(number<0>{},(!GuardTail || token+row+m*16<a.total_tokens) ? *reinterpret_cast<const uint32x4_t*>(a.q+off) : uint32x4_t{0});
@@ -86,11 +89,11 @@ struct GdnOutputCooperativeKernel {
                 thread_buffer<float,4> tmp;tmp.template set_as<C>(number<0>{},raw[m]);
                 static_for<0,4,1>{}([&](auto j){
                     const index_t col=key_col+n*16+group+j*4;
-                    const float inv=shuffle(en,col);
+                    const float gcol=shuffle(gate,col);
                     if constexpr(std::is_same_v<DataType,bf16_t>)
-                        tmp(j)=col<=row+m*16 ? tmp[j]*erow[m]*inv : 0.f;
+                        tmp(j)=col<=row+m*16 ? tmp[j]*gdn_gate_delta(grow[m],gcol,true) : 0.f;
                     else
-                        tmp(j)=col<=row+m*16 ? type_convert<float>(gdn_type_convert<DataType>(tmp[j]*erow[m]*inv)) : 0.f;
+                        tmp(j)=col<=row+m*16 ? type_convert<float>(gdn_type_convert<DataType>(tmp[j]*gdn_gate_delta(grow[m],gcol,true))) : 0.f;
                 });
                 static_for<0,4,1>{}([&](auto j){
                     sm[(row+m*16-tile_row)*Stride+key_col+n*16+group+j*4]=gdn_type_convert<DataType>(tmp[j]);

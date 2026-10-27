@@ -143,7 +143,15 @@ inline bool is_xdl_wmma_supported()
 {
     if(is_hcu_xdl_supported())
     {
-        // HCU MMAC is 16x16 only; 32x32 / 4x4 AMD MFMA sizes cannot be emulated.
+        // Keep the XDL FP8 gate aligned with the native HCU FP8 MMAC wrapper.
+        if constexpr(is_same<ADataType, f8_t>::value || is_same<BDataType, f8_t>::value)
+        {
+            const auto device_name = get_device_name();
+            if((device_name != "gfx92a" && device_name != "gfx938" && device_name != "gfx946") ||
+               !is_same<ADataType, BDataType>::value)
+                return false;
+        }
+        // HCU MMAC is 16x16 only; 32x32 / 4x4 emulation is not implemented.
         return MPerXDL64 == 16 && NPerXDL64 == 16 && MPerXDL32 == 16 && NPerXDL32 == 16;
     }
 

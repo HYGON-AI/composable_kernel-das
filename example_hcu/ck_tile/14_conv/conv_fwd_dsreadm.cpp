@@ -180,6 +180,12 @@ bool run_grouped_conv_fwd(const ck_tile::conv::ConvParam& conv_param)
 
     auto kernel_args = Kernel::MakeKernelArgs(host_args);
 
+    if(!Kernel::IsSupportedArgument(host_args, kernel_args))
+    {
+        throw std::runtime_error(
+            "wrong! conv_fwd with the specified parameters does not support this Conv problem");
+    }
+    
     float avg_time = ck_tile::launch_kernel(
         {nullptr, true},
         ck_tile::make_kernel<BlockSize, MinBlockPerCU>(

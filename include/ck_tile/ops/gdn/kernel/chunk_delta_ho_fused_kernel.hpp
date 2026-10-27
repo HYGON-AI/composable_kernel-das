@@ -199,7 +199,7 @@ struct ChunkDeltaHOFusedKernel
             }
                 const index_t lane=get_lane_id(),wave=get_warp_id();
                 const float gate=a.g[static_cast<long_index_t>(token)*a.num_value_heads+vh];
-                const float eg=__builtin_amdgcn_exp2f(gate),eng=__builtin_amdgcn_exp2f(-gate);
+                const float eg=__builtin_amdgcn_exp2f(gate);
                 thread_buffer<DataType,2> wk,qk,kk;
                 const auto qoff=(static_cast<long_index_t>(token)*a.num_qk_heads+qh)*128+state_k;
                 const auto woff=(static_cast<long_index_t>(token)*a.num_value_heads+vh)*128+state_k;
@@ -239,7 +239,7 @@ struct ChunkDeltaHOFusedKernel
                     if constexpr(ComputeOutput) {
                         const float hist=(tmp[64+lane]+tmp[80+lane])+(tmp[96+lane]+tmp[112+lane]);
                         const float score=(tmp[128]+tmp[129])+(tmp[130]+tmp[131]);
-                        const float weight=type_convert<float>(gdn_type_convert<DataType>(score*eg*eng));
+                        const float weight=type_convert<float>(gdn_type_convert<DataType>(score*gdn_gate_delta(gate,gate,true)));
                         all.o[off]=gdn_type_convert<DataType>((hist+weight*type_convert<float>(value))*all.scale);
                     }
                 }
@@ -358,7 +358,9 @@ struct ChunkDeltaHOFusedKernel
                 if(get_thread_id()<64) {
                     const float g=get_thread_id()<valid_tokens ? a.g[static_cast<long_index_t>(token+get_thread_id())*a.num_value_heads+vh] : 0.f;
                     sm.gate[get_thread_id()]=__builtin_amdgcn_exp2f(g);
-                    sm.gate[64+get_thread_id()]=__builtin_amdgcn_exp2f(-g);
+                    // Keep the raw log2 gate; the score pair uses the row/col
+                    // delta so strong decay cannot form 0 * inf.
+                    sm.gate[64+get_thread_id()]=g;
                 }
                 publish<0>();
                 auto kv=make_tensor_view<address_space_enum::lds>(sm.k,operand_descriptor<false>());
@@ -380,7 +382,7 @@ struct ChunkDeltaHOFusedKernel
                 auto qhout=Projection{}.MakeOuputLayout(qhacc);
                 __syncthreads();
                 visit(so,[&](auto i,index_t row,index_t col) {
-                    const float val=col<=row && row<valid_tokens && col<valid_tokens ? so[i]*sm.gate[row]*sm.gate[64+col] : 0.f;
+                    const float val=col<=row && row<valid_tokens && col<valid_tokens ? so[i]*gdn_gate_delta(sm.gate[64+row],sm.gate[64+col],true) : 0.f;
                     sm.w[row*68+col]=gdn_type_convert<DataType>(val);
                 });
                 __syncthreads();

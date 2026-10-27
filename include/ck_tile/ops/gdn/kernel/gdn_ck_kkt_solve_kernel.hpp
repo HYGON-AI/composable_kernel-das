@@ -99,8 +99,6 @@ struct GdnKktSolveFwdKernel
 template <typename Policy, int NumWarps, bool SplitHeads = false>
 struct GdnKktSolveFwdInvoker
 {
-    static_assert(NumWarps == 1 || NumWarps == 2 || NumWarps == 4);
-
     static void Run(
         hipStream_t stream,
         const uint16_t* k,

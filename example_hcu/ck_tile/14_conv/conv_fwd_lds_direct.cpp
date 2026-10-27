@@ -179,6 +179,14 @@ bool run_grouped_conv_fwd(const ck_tile::conv::ConvParam& conv_param, bool time_
 
     auto kernel_args = Kernel::MakeKernelArgs(host_args);
 
+    if(!Kernel::IsSupportedArgument(host_args, kernel_args))
+    {
+        std::cout << "Arguments not supported by this kernel instance"
+                  << " (set CK_TILE_LOGGING=1 for details)";
+        std::cout << ", skipping!" << std::endl;
+        return false;  
+    }
+
     float avg_time = ck_tile::launch_kernel(
         {nullptr, time_kernel},
         ck_tile::make_kernel<BlockSize, MinBlockPerCU>(

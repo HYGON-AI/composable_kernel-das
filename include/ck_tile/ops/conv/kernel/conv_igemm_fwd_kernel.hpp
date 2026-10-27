@@ -198,7 +198,225 @@ struct ConvIgemmFwdKernel
             {hargs.input.strides[0], hargs.weight.strides[0], hargs.output.strides[0]}};
     }
 
-    CK_TILE_HOST static bool IsSupportedArgument(const KernelArgs&) { return true; }
+    CK_TILE_HOST static bool IsSupportedArgument(const HostArgs& hargs, const KernelArgs& kargs)
+    {
+        [[maybe_unused]] const auto& in_lengths  = hargs.input.lengths;
+        [[maybe_unused]] const auto& in_strides  = hargs.input.strides;
+        [[maybe_unused]] const auto& wei_lengths = hargs.weight.lengths;
+        [[maybe_unused]] const auto& wei_strides = hargs.weight.strides;
+        [[maybe_unused]] const auto& out_lengths = hargs.output.lengths;
+        [[maybe_unused]] const auto& out_strides = hargs.output.strides;
+
+        const auto unsupported = [](const char* msg) {
+            if(ck_tile::EnvIsEnabled(CK_TILE_ENV(CK_TILE_LOGGING)))
+            {
+                CK_TILE_ERROR(msg);
+            }
+        };
+
+        // a stride is only meaningful when the extent of its own dimension is not 1
+        const auto stride_matches = [](index_t length, index_t stride, index_t expected) {
+            return length == 1 || stride == expected;
+        };
+
+        // check specialization: the Filter1x1 descriptors ignore filter extents and pads,
+        // and Filter1x1Stride1Pad0 additionally assumes unit conv strides
+        if constexpr(Spec == ConvFwdSpec::Filter1x1Stride1Pad0 ||
+                     Spec == ConvFwdSpec::Filter1x1Pad0)
+        {
+            for(index_t i = 0; i < NDimSpatial; ++i)
+            {
+                if(wei_lengths[i + 3] != 1 || hargs.input_left_pads[i] != 0 ||
+                   hargs.input_right_pads[i] != 0)
+                {
+                    unsupported("ConvFwdSpec::Filter1x1* needs a 1x1 filter and no padding!");
+                    return false;
+                }
+                if constexpr(Spec == ConvFwdSpec::Filter1x1Stride1Pad0)
+                {
+                    if(hargs.conv_filter_strides[i] != 1)
+                    {
+                        unsupported(
+                            "ConvFwdSpec::Filter1x1Stride1Pad0 needs unit conv filter strides!");
+                        return false;
+                    }
+                }
+            }
+        }
+
+        // check vector access of A (input tensor), mirroring MakeADescriptor_M_K<ALayout>
+        if constexpr(std::is_same_v<ALayout, tensor_layout::convolution::NGCHW>)
+        {
+            // descriptor (N, C, Hi, Wi) vectorizes along Wi
+            if(in_strides[4] != 1)
+            {
+                unsupported("input tensor is not contiguous along Wi for NGCHW layout!");
+                return false;
+            }
+            if(in_lengths[4] % AVectorLength != 0)
+            {
+                unsupported("Wi is not a multiple of vector load size for A tensor!");
+                return false;
+            }
+        }
+        else if constexpr(std::is_same_v<ALayout, tensor_layout::convolution::NHWGC>)
+        {
+            // descriptor (N, Hi, Wi, C) vectorizes along C and hardcodes the C stride to 1
+            if(in_strides[2] != 1)
+            {
+                unsupported("input tensor is not contiguous along C for NHWGC layout!");
+                return false;
+            }
+            if(in_lengths[2] % AVectorLength != 0)
+            {
+                unsupported("C is not a multiple of vector load size for A tensor!");
+                return false;
+            }
+        }
+        else if constexpr(std::is_base_of_v<tensor_layout::convolution::BaseNGCHWc, ALayout>)
+        {
+            // innermost extent is the compile-time packed size ALayout::x
+            if constexpr(ALayout::x % AVectorLength != 0)
+            {
+                unsupported(
+                    "packed size of A layout is not a multiple of vector load size for A tensor!");
+                return false;
+            }
+        }
+
+        // check vector access of B (weight tensor), mirroring MakeBDescriptor_N_K<BLayout>;
+        // the descriptors are built packed, so the weight must actually be packed
+        if constexpr(std::is_same_v<BLayout, tensor_layout::convolution::GKCYX>)
+        {
+            const index_t K = wei_lengths[1];
+            const index_t C = wei_lengths[2];
+            const index_t Y = wei_lengths[3];
+            const index_t X = wei_lengths[4];
+
+            if(X % BVectorLength != 0)
+            {
+                unsupported("X is not a multiple of vector load size for B tensor!");
+                return false;
+            }
+            if(!stride_matches(X, wei_strides[4], 1) || !stride_matches(Y, wei_strides[3], X) ||
+               !stride_matches(C, wei_strides[2], Y * X) ||
+               !stride_matches(K, wei_strides[1], C * Y * X))
+            {
+                unsupported("weight tensor is not packed for GKCYX layout!");
+                return false;
+            }
+        }
+        else if constexpr(std::is_same_v<BLayout, tensor_layout::convolution::GKYXC>)
+        {
+            const index_t K = wei_lengths[1];
+            const index_t Y = wei_lengths[3];
+            const index_t X = wei_lengths[4];
+            const index_t C = wei_lengths[2];
+
+            if(C % BVectorLength != 0)
+            {
+                unsupported("C is not a multiple of vector load size for B tensor!");
+                return false;
+            }
+            if(!stride_matches(C, wei_strides[2], 1) || !stride_matches(X, wei_strides[4], C) ||
+               !stride_matches(Y, wei_strides[3], X * C) ||
+               !stride_matches(K, wei_strides[1], Y * X * C))
+            {
+                unsupported("weight tensor is not packed for GKYXC layout!");
+                return false;
+            }
+        }
+        else if constexpr(std::is_base_of_v<tensor_layout::convolution::BaseGKCYXc, BLayout>)
+        {
+            constexpr index_t Cx = BLayout::x;
+
+            const index_t K = wei_lengths[1];
+            const index_t C = wei_lengths[2];
+            const index_t Y = wei_lengths[3];
+            const index_t X = wei_lengths[4];
+
+            if constexpr(Cx % BVectorLength != 0)
+            {
+                unsupported(
+                    "packed size of B layout is not a multiple of vector load size for B tensor!");
+                return false;
+            }
+            if(!stride_matches(X, wei_strides[4], Cx) ||
+               !stride_matches(Y, wei_strides[3], X * Cx) ||
+               !stride_matches(C, wei_strides[2], Y * X * Cx) ||
+               !stride_matches(K, wei_strides[1], C * Y * X * Cx))
+            {
+                unsupported("weight tensor is not packed for GKCYXc layout!");
+                return false;
+            }
+        }
+
+        // check vector access of C (output tensor), mirroring MakeCDescriptor_M_N<CLayout>
+        if constexpr(std::is_same_v<CLayout, tensor_layout::convolution::NGKHW>)
+        {
+            // descriptor (N, K, Ho, Wo) vectorizes along Wo
+            if(out_strides[4] != 1)
+            {
+                unsupported("output tensor is not contiguous along Wo for NGKHW layout!");
+                return false;
+            }
+            if(out_lengths[4] % CVectorLength != 0)
+            {
+                unsupported("Wo is not a multiple of vector store size for C tensor!");
+                return false;
+            }
+        }
+        else if constexpr(std::is_same_v<CLayout, tensor_layout::convolution::NHWGK>)
+        {
+            // descriptor (N * Ho * Wo, K) vectorizes along K and hardcodes the K stride to 1;
+            // the flattened gemm-M dimension also assumes (N, Ho, Wo) are uniformly strided
+            const index_t N  = out_lengths[1];
+            const index_t Ho = out_lengths[3];
+            const index_t Wo = out_lengths[4];
+
+            if(out_strides[2] != 1)
+            {
+                unsupported("output tensor is not contiguous along K for NHWGK layout!");
+                return false;
+            }
+            if(out_lengths[2] % CVectorLength != 0)
+            {
+                unsupported("K is not a multiple of vector store size for C tensor!");
+                return false;
+            }
+            if(!stride_matches(Ho, out_strides[3], Wo * out_strides[4]) ||
+               !stride_matches(N, out_strides[1], Ho * out_strides[3]))
+            {
+                unsupported("output tensor is not uniformly strided for the flattened M "
+                            "dimension of NHWGK layout!");
+                return false;
+            }
+        }
+        else if constexpr(std::is_base_of_v<tensor_layout::convolution::BaseNGCHWc, CLayout>)
+        {
+            // innermost extent is the compile-time packed size CLayout::x
+            if constexpr(CLayout::x % CVectorLength != 0)
+            {
+                unsupported(
+                    "packed size of C layout is not a multiple of vector store size for C tensor!");
+                return false;
+            }
+        }
+
+        // gemm compatibility check on the padded descriptors: a zero extent (e.g. an empty
+        // tensor) cannot form even one block tile
+        const index_t gemm_m = kargs.a_desc.get_length(number<1>{});
+        const index_t gemm_n = kargs.b_desc.get_length(number<1>{});
+        const index_t gemm_k = kargs.b_desc.get_length(number<2>{});
+
+        if(gemm_m < MPerBlock || gemm_n < NPerBlock || gemm_k < KPerBlock)
+        {
+            unsupported("problem extents are too small to form one block tile!");
+            return false;
+        }
+
+        return true;
+    }
 
     CK_TILE_HOST_DEVICE static constexpr index_t GetSmemByteSize()
     {
