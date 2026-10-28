@@ -17,7 +17,7 @@
 #include "ck/tensor_operation/gpu/device/gemm_specialization.hpp"
 #include "ck/tensor_operation/gpu/grid/gridwise_gemm_xdl_cshuffle_v3_multi_d_ab_scale.hpp"
 #include "ck/host_utility/device_prop.hpp"
-#include "ck/host_utility/kernel_launch.hpp"
+#include "ck/host_utility/w8a8_kernel_launch.hpp"
 #include "ck/host_utility/flush_cache.hpp"
 
 namespace ck {
@@ -76,7 +76,8 @@ template <typename ALayout,
           typename ComputeTypeA                       = CDataType,
           typename ComputeTypeB                       = ComputeTypeA,
           typename LDSTypeA                           = ComputeTypeA,
-          typename LDSTypeB                           = ComputeTypeB>
+          typename LDSTypeB                           = ComputeTypeB,
+          bool EnableSplitK                          = true>
 struct DeviceGemmMultiD_ABScale_Xdl_CShuffle_V3
     : public DeviceGemmMultipleD_ABScale<ALayout,
                                          BLayout,
@@ -116,6 +117,8 @@ struct DeviceGemmMultiD_ABScale_Xdl_CShuffle_V3
     static constexpr auto NXdlPerWave64    = WarpTileConfig64.At(3);
     static constexpr auto NXdlPerWave32    = WarpTileConfig32.At(3);
     static constexpr index_t NumDTensor    = DsDataType::Size();
+    static constexpr auto SplitKMemoryOperation = EnableSplitK ? InMemoryDataOperationEnum::AtomicAdd
+                                                              : InMemoryDataOperationEnum::Set;
 
     // GridwiseGemm
     template <typename WarpTileConfig>
@@ -254,7 +257,7 @@ struct DeviceGemmMultiD_ABScale_Xdl_CShuffle_V3
                                                          arg.M * arg.N * sizeof(CDataType),
                                                          stream_config.stream_id_));
 
-                    ave_time = launch_and_time_kernel(
+                    ave_time = ck::launch_and_time_w8a8_kernel(
                         stream_config, kernel, dim3(gdx, gdy, gdz), dim3(BlockSize), 0, arg);
                 }
             };
@@ -287,7 +290,7 @@ struct DeviceGemmMultiD_ABScale_Xdl_CShuffle_V3
                         const auto kernel =
                             kernel_gemm_xdl_cshuffle_v3<GridwiseGemm,
                                                         true,
-                                                        InMemoryDataOperationEnum::AtomicAdd,
+                                                        SplitKMemoryOperation,
                                                         minimum_occupancy>;
                         Run(kernel);
                     }
@@ -314,7 +317,7 @@ struct DeviceGemmMultiD_ABScale_Xdl_CShuffle_V3
                             const auto kernel =
                                 kernel_gemm_xdl_cshuffle_v3<GridwiseGemm,
                                                             false,
-                                                            InMemoryDataOperationEnum::AtomicAdd,
+                                                            SplitKMemoryOperation,
                                                             minimum_occupancy>;
                             Run(kernel);
                         }
@@ -335,7 +338,7 @@ struct DeviceGemmMultiD_ABScale_Xdl_CShuffle_V3
                             const auto kernel =
                                 kernel_gemm_xdl_cshuffle_v3<GridwiseGemm,
                                                             false,
-                                                            InMemoryDataOperationEnum::AtomicAdd,
+                                                            SplitKMemoryOperation,
                                                             minimum_occupancy,
                                                             TailNumber::Odd>;
                             Run(kernel);
@@ -418,6 +421,8 @@ struct DeviceGemmMultiD_ABScale_Xdl_CShuffle_V3
 
     static bool IsSupportedArgument(const Argument& arg)
     {
+        if(!EnableSplitK && arg.KBatch != 1)
+            return false;
         // with splitk the implementation doesn't work
         // when KRead % ScaleBlockK != 0, independently of K padding
         if(arg.KBatch > 1 && arg.KRead % ScaleBlockK != 0)

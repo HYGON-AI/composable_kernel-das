@@ -523,7 +523,7 @@ struct intrin_mfma_i32_16x16x32i8<16, 16>
     template <class FloatC>
     __device__ static void Run(const int8x8_t& reg_a, const int8x8_t& reg_b, FloatC& reg_c)
     {
-#if defined(__gfx928__) || defined(__gfx92a__) || defined(__gfx936__) || defined(__gfx938__)
+#if defined(__gfx928__) || defined(__gfx92a__) || defined(__gfx936__) || defined(__gfx938__) || defined(__gfx946__)
         intrin_mmac_i32_16x16x32i8(bit_cast<int32x2_t>(reg_a),
                                    bit_cast<int32x2_t>(reg_b),
                                    reg_c);

@@ -407,6 +407,8 @@ struct BlockwiseGemmXdlops_pipeline_v1_ab_scale<BlockGemmPipelineScheduler::Intr
         b_scale_thread_copy.MoveSrcSliceWindow(b_scale_grid_desc, b_scale_thread_copy_step);
 
         constexpr auto num_scale_k_block = CScaleThreadDesc{}.GetLength(Number<0>{});
+        static_assert(KRepeat >= num_scale_k_block && KRepeat % num_scale_k_block == 0,
+                      "MMAC KPack must not cross a scale block; reduce AK1/BK1");
         constexpr auto num_scale_m_block = CScaleThreadDesc{}.GetLength(Number<1>{});
         constexpr auto num_scale_n_block = CScaleThreadDesc{}.GetLength(Number<2>{});
 
