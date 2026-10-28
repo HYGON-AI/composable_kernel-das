@@ -12,7 +12,8 @@ template <bool kPadM_,
           bool kPadN_,
           bool UseSmoothInputScale_,
           bool UseRawStore_ = true,
-          bool UseMax3_     = false>
+          bool UseMax3_     = false,
+          bool ZeroSafe_    = false>
 struct DynamicQuantEpilogueTraits
 {
     static constexpr bool kPadM               = kPadM_;
@@ -20,6 +21,7 @@ struct DynamicQuantEpilogueTraits
     static constexpr bool UseSmoothInputScale = UseSmoothInputScale_;
     static constexpr bool UseRawStore         = UseRawStore_;
     static constexpr bool UseMax3             = UseMax3_;
+    static constexpr bool ZeroSafe            = ZeroSafe_;
 };
 
 // this epilogue just store out a M*N matrix, row major
@@ -105,6 +107,40 @@ struct DynamicQuantEpilogue
         return reduce_crosswarp_sync.GetSmemSize();
     }
 
+    template <typename OAccTile>
+    CK_TILE_DEVICE static auto CastOutputTile(const OAccTile& tile)
+    {
+#if defined(__gfx946__)
+        if constexpr(std::is_same_v<ODataType, int8_t> && std::is_same_v<AccDataType, float>)
+        {
+            // The gfx946 PMD SDK misexecutes packed v_cvt_i32_f32 SDWA.
+            // Keep conversion as full i32, then pack masked bytes explicitly.
+            auto out = make_static_distributed_tensor<ODataType>(tile.get_tile_distribution());
+            constexpr index_t count = OAccTile::get_thread_buffer_size();
+            // set_as<uint32_t> requires the entire thread buffer to be aligned.
+            constexpr index_t packed_count = count % 4 == 0 ? count : 0;
+            static_for<0, packed_count / 4, 1>{}([&](auto group) {
+                uint32_t packed = 0;
+                static_for<0, 4, 1>{}([&](auto byte) {
+                    constexpr auto idx = number<group.value * 4 + byte.value>{};
+                    uint32_t value = static_cast<int32_t>(tile.get_thread_buffer()[idx]) & 0xff;
+                    asm volatile("" : "+v"(value)); // prevent folding CVT back into SDWA
+                    packed |= value << (byte.value * 8);
+                });
+                out.get_thread_buffer().template set_as<uint32_t>(group, packed);
+            });
+            static_for<packed_count, count, 1>{}([&](auto idx) {
+                uint32_t value = static_cast<int32_t>(tile.get_thread_buffer()[idx]) & 0xff;
+                asm volatile("" : "+v"(value));
+                out.get_thread_buffer().at(idx) = static_cast<int8_t>(value);
+            });
+            return out;
+        }
+        else
+#endif
+            return cast_tile<ODataType>(tile);
+    }
+
     template <typename ODramWindowTmp, typename YScaleWindow, typename OAccTile>
     CK_TILE_DEVICE auto Impl(ODramWindowTmp& o_dram_window_tmp,
                              YScaleWindow& y_scale_window,
@@ -154,18 +190,22 @@ struct DynamicQuantEpilogue
 
         sweep_tile(o_acc_tmp, [&](auto idx) {
             constexpr auto row_id = make_tuple(idx[number<0>{}]);
-            o_acc_tmp(idx)        = o_acc_tmp[idx] / y_scale(row_id);
+            if constexpr(Problem::Traits::ZeroSafe)
+                o_acc_tmp(idx) = y_scale(row_id) == 0 ? AccDataType{0}
+                                                    : o_acc_tmp[idx] / y_scale(row_id);
+            else
+                o_acc_tmp(idx) = o_acc_tmp[idx] / y_scale(row_id);
         });
 
         // TODO: this is ugly
         if constexpr(UseRawStore && (kPadM || kPadN))
         {
-            store_tile_raw(o_dram_window_tmp, cast_tile<ODataType>(o_acc_tmp));
+            store_tile_raw(o_dram_window_tmp, CastOutputTile(o_acc_tmp));
             buffer_store_fence();
         }
         else
         {
-            store_tile(o_dram_window_tmp, cast_tile<ODataType>(o_acc_tmp));
+            store_tile(o_dram_window_tmp, CastOutputTile(o_acc_tmp));
         }
     }
 
