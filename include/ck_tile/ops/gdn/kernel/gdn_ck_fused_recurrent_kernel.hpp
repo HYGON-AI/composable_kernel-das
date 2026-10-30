@@ -32,6 +32,11 @@ struct GdnFusedRecurrentKargs
     const int64_t* cu_seqlens;
     void* output;
     float* final_state;
+    // Paged state support: when `state_indices` is null the recurrent state is
+    // dense -- slot `i` of the pool is sequence `i`. Otherwise the pool is
+    // indexed by the block table and slot `state_indices[sequence]` is used;
+    // `state_slot_stride` is then the element distance between two slots.
+    const int64_t* state_indices;
 
     ck_tile::index_t batch;
     ck_tile::index_t time;
@@ -40,6 +45,10 @@ struct GdnFusedRecurrentKargs
     ck_tile::index_t key_dim;
     ck_tile::index_t value_dim;
     ck_tile::index_t sequences;
+    // Element distance between two consecutive state-pool slots (dense: h_v *
+    // key_dim * value_dim) and the slot this CTA resolved for its sequence.
+    ck_tile::long_index_t state_slot_stride;
+    ck_tile::long_index_t state_slot;
 
     float scale;
     int g_dtype;
@@ -115,6 +124,36 @@ struct GdnFusedRecurrentKernel
             sequence_head / args.value_heads;
         if(sequence >= args.sequences)
             return;
+
+        // Resolve this sequence's recurrent-state slot and hand it to the
+        // pipeline, which only ever needs `state_slot` + `state_slot_stride` to
+        // address the pool. Dense callers (state_indices == nullptr) keep the
+        // historical "slot == sequence" mapping, so their numerics are
+        // untouched. In pool mode a non-positive id is the framework's
+        // NULL_BLOCK_ID: such a row has no state at all, so it runs from a zero
+        // state and must not write a slot back.
+        ck_tile::long_index_t state_slot =
+            static_cast<ck_tile::long_index_t>(sequence);
+        if(args.state_indices != nullptr)
+        {
+            const ck_tile::long_index_t state_index =
+                static_cast<ck_tile::long_index_t>(args.state_indices[sequence]);
+            if(state_index > 0)
+            {
+                state_slot = state_index;
+            }
+            else
+            {
+                args.use_initial_state = false;
+                args.store_final_state = false;
+            }
+        }
+        args.state_slot = state_slot;
+        if(args.state_slot_stride <= 0)
+        {
+            args.state_slot_stride = static_cast<ck_tile::long_index_t>(args.value_heads) *
+                                     args.key_dim * args.value_dim;
+        }
 
         ck_tile::long_index_t bos = 0;
         ck_tile::long_index_t eos = 0;

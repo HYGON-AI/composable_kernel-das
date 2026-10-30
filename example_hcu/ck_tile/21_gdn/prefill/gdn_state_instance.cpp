@@ -196,25 +196,71 @@ void launch_state_cp_bf16(const PrefillArguments& args, hipStream_t stream)
             std::false_type{});
 }
 
+// 64x64 tiled transpose through LDS. The element-wise version issued one store
+// per source element with a 512 B stride, so every store touched a fresh cache
+// line. Tiling keeps both the global loads and the global stores float4
+// coalesced, and the 64-wide tile needs 4 tiles (8 barriers) instead of the 16
+// tiles (32 barriers) a 32x32 tile would need on a latency-bound copy.
 struct TransposeStateKernel
 {
     CK_TILE_DEVICE void operator()(const float* input,
                                    float* output,
                                    size_t matrices) const
     {
+        constexpr int kDim        = kSupportedHeadDim;
+        constexpr int kTile       = 64;
+        constexpr int kPerRow     = kDim / kTile;
+        constexpr int kVec        = 4;
+        constexpr int kVecsPerRow = kTile / kVec;
+        constexpr int kVecsPerTile = kTile * kTile / kVec;
+        __shared__ float tile[kTile][kTile + 1];
+
         const size_t matrix = blockIdx.x;
         if(matrix >= matrices)
             return;
-        for(int index = threadIdx.x;
-            index < kSupportedHeadDim * kSupportedHeadDim;
-            index += blockDim.x)
+        const float* src = input + matrix * kDim * kDim;
+        float* dst       = output + matrix * kDim * kDim;
+
+        const int tid     = static_cast<int>(threadIdx.x);
+        const int nthread = static_cast<int>(blockDim.x);
+        const int passes  = kVecsPerTile / nthread;
+        for(int tile_id = 0; tile_id < kPerRow * kPerRow; ++tile_id)
         {
-            const int row = index / kSupportedHeadDim;
-            const int col = index % kSupportedHeadDim;
-            output[matrix * kSupportedHeadDim * kSupportedHeadDim +
-                   static_cast<size_t>(col) * kSupportedHeadDim + row] =
-                input[matrix * kSupportedHeadDim * kSupportedHeadDim +
-                      static_cast<size_t>(row) * kSupportedHeadDim + col];
+            const int tile_row = tile_id / kPerRow;
+            const int tile_col = tile_id - tile_row * kPerRow;
+            const int row_base = tile_row * kTile;
+            const int col_base = tile_col * kTile;
+
+            // Coalesced float4 loads into LDS rows.
+            for(int i = 0; i < passes; ++i)
+            {
+                const int v = tid + i * nthread;
+                const int r = v / kVecsPerRow;
+                const int c = (v - r * kVecsPerRow) * kVec;
+                const float4 x = *reinterpret_cast<const float4*>(
+                    src + (row_base + r) * kDim + col_base + c);
+                tile[r][c + 0] = x.x;
+                tile[r][c + 1] = x.y;
+                tile[r][c + 2] = x.z;
+                tile[r][c + 3] = x.w;
+            }
+            ck_tile::block_sync_lds();
+            // Walk the destination in float4 order so the global stores stay
+            // coalesced; the +1 padded LDS row keeps the transposed reads at a
+            // 2-way bank conflict at worst.
+            for(int i = 0; i < passes; ++i)
+            {
+                const int v = tid + i * nthread;
+                const int a = v / kVecsPerRow;                   // destination row
+                const int b = (v - a * kVecsPerRow) * kVec;      // destination col
+                float4 y;
+                y.x = tile[b + 0][a];
+                y.y = tile[b + 1][a];
+                y.z = tile[b + 2][a];
+                y.w = tile[b + 3][a];
+                *reinterpret_cast<float4*>(dst + (col_base + a) * kDim + row_base + b) = y;
+            }
+            ck_tile::block_sync_lds();
         }
     }
 };

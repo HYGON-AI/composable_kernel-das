@@ -18,6 +18,18 @@ struct GdnFusedRecurrentPipeline
     static constexpr index_t kValueTile = Policy::kValueTile;
     static constexpr index_t kKeyTile = Policy::kKeyTile;
 
+    // First element of `sequence_head`'s recurrent state inside the pool. The
+    // kernel resolves `state_slot` (dense: the sequence index, paged: the block
+    // id) once per CTA, so the only difference between the two layouts is the
+    // slot stride; `sequence_head` still carries the value head.
+    CK_TILE_DEVICE static long_index_t state_base(const GdnFusedRecurrentKargs& args,
+                                                  index_t sequence_head)
+    {
+        const index_t value_head = sequence_head % args.value_heads;
+        return args.state_slot * args.state_slot_stride +
+               static_cast<long_index_t>(value_head) * args.key_dim * args.value_dim;
+    }
+
     CK_TILE_DEVICE static float load_as_float(const void* pointer,
                                               long_index_t offset,
                                               int dtype)
@@ -157,11 +169,17 @@ struct GdnFusedRecurrentPipeline
             // The two-wave raw-gate specialization owns complete V16/K128
             // tiles. Consecutive four-key vectors are aligned; each state
             // element has one owner, including in-place final-state updates.
+            // A row without a pool slot (NULL_BLOCK_ID) starts from zero
+            // instead of reading whatever the dense mapping would hit.
+            tile_elementwise_inout(
+                [](auto& value) { value = 0.0f; }, state);
+            if(!args.use_initial_state)
+                return state;
             using Vec = float __attribute__((ext_vector_type(4)));
             constexpr int repeats = decltype(state)::get_thread_buffer_size() / 8;
             const int lane = get_lane_id();
             const int row = get_warp_id() * 4 + lane / 16;
-            const long_index_t base = static_cast<long_index_t>(sequence_head) * 128 * 128;
+            const long_index_t base = state_base(args, sequence_head);
             static_for<0, repeats, 1>{}([&](auto vr) {
                 static_for<0, 2, 1>{}([&](auto kr) {
                     const auto* p = reinterpret_cast<const Vec*>(args.initial_state + base +
@@ -179,9 +197,7 @@ struct GdnFusedRecurrentPipeline
         if(!args.use_initial_state)
             return state;
 
-        const long_index_t head_base =
-            static_cast<long_index_t>(sequence_head) *
-            args.key_dim * args.value_dim;
+        const long_index_t head_base = state_base(args, sequence_head);
         const index_t stride_v =
             args.transpose_state ? args.key_dim : 1;
         const index_t stride_k =
@@ -354,13 +370,15 @@ struct GdnFusedRecurrentPipeline
                                           index_t valid_values) const
     {
 
+        if(!args.store_final_state)
+            return;
         if constexpr(RawGateFastPath && Policy::kValueTile == 16 && Policy::kBlockSize == 128)
         {
             using Vec = float __attribute__((ext_vector_type(4)));
             constexpr int repeats = StateTile::get_thread_buffer_size() / 8;
             const int lane = get_lane_id();
             const int row = get_warp_id() * 4 + lane / 16;
-            const long_index_t base = static_cast<long_index_t>(sequence_head) * 128 * 128;
+            const long_index_t base = state_base(args, sequence_head);
             static_for<0, repeats, 1>{}([&](auto vr) {
                 static_for<0, 2, 1>{}([&](auto kr) {
                     auto* p = reinterpret_cast<Vec*>(args.final_state + base +
@@ -372,11 +390,7 @@ struct GdnFusedRecurrentPipeline
             });
             return;
         }
-        if(!args.store_final_state)
-            return;
-        const long_index_t head_base =
-            static_cast<long_index_t>(sequence_head) *
-            args.key_dim * args.value_dim;
+        const long_index_t head_base = state_base(args, sequence_head);
         const index_t stride_v =
             args.transpose_state ? args.key_dim : 1;
         const index_t stride_k =
