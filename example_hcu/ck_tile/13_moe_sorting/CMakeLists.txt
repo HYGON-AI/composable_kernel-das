@@ -11,4 +11,8 @@ list(APPEND EXAMPLE_MOE_SORTING_COMPILE_OPTIONS -Wno-undefined-func-template -Wn
 # list(APPEND EXAMPLE_MOE_SORTING_COMPILE_OPTIONS -v --save-temps -Wno-gnu-line-marker)
 target_compile_options(tile_example_moe_sorting PRIVATE ${EXAMPLE_MOE_SORTING_COMPILE_OPTIONS})
 
+# Match AITER JIT; runtime device properties choose ordinary or multi-die launch.
+if("gfx946" IN_LIST GPU_TARGETS OR "gfx946" IN_LIST CMAKE_HIP_ARCHITECTURES)
+  target_compile_definitions(tile_example_moe_sorting PRIVATE CK_TILE_MOE_SORTING_ENABLE_MULTIDIE=1)
+endif()
 
