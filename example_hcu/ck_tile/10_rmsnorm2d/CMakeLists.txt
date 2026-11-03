@@ -37,6 +37,7 @@ add_custom_command(
   OUTPUT ${RMSNORM2D_FWD_GEN_BLOBS}
   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_LIST_DIR}/generate.py
   --api ${RMSNORM2D_FWD_ENABLE_APIS} --working_path ${CMAKE_CURRENT_BINARY_DIR} --gen_blobs ${RMSNORM2D_FWD_CODEGEN_OPTIONS}
+  DEPENDS ${CMAKE_CURRENT_LIST_DIR}/generate.py
 )
 
 set(TILE_RMSNORM2D_FWD "tile_rmsnorm2d_fwd")
@@ -62,7 +63,7 @@ endif()
 
 # Match AITER JIT: compile both paths for gfx946; select by runtime HIP topology.
 if("gfx946" IN_LIST GPU_TARGETS OR "gfx946" IN_LIST CMAKE_HIP_ARCHITECTURES)
-  target_compile_definitions(${TILE_RMSNORM2D_FWD} PRIVATE CK_TILE_RMSNORM_ENABLE_MULTIDIE=1)
+  target_compile_definitions(${TILE_RMSNORM2D_FWD} PRIVATE CK_ENABLE_MULTIDIE=1)
 endif()
 
 set(EXAMPLE_RMSNORM2D_FWD "tile_example_rmsnorm2d_fwd")

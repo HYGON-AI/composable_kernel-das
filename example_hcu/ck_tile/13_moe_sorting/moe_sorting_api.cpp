@@ -3,7 +3,7 @@
 // Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 
 #include "moe_sorting_api.hpp"
-#include "moe_sorting_launch.hpp"
+#include "ck/host_utility/multidie_kernel_launch.hpp"
 
 #ifndef MOE_SORTING_USE_EX_KERNEL
 #define MOE_SORTING_USE_EX_KERNEL 1
@@ -30,7 +30,7 @@
     const dim3 blocks    = kernel::BlockSize(a);                                      \
     const auto lds_bytes = kernel::GetSmemSize(a);                                    \
     float ave_time       = ck_tile::launch_kernel(                                    \
-        s, ck_tile::make_moe_sorting_kernel(kernel{}, grids, blocks, lds_bytes, kargs));    \
+        s, ck_tile::make_multidie_kernel(ck::launch_policy::moe_sorting, kernel{}, grids, blocks, lds_bytes, kargs));    \
     return ave_time;
 
 #else
@@ -50,7 +50,7 @@
     const dim3 blocks                         = kernel::BlockSize(a);                                   \
     const auto lds_bytes                      = kernel::GetSmemSize(a);                                 \
     float ave_time                            = ck_tile::launch_kernel(                                 \
-        s, ck_tile::make_moe_sorting_kernel(kernel{}, grids, blocks, lds_bytes, kargs)); \
+        s, ck_tile::make_multidie_kernel(ck::launch_policy::moe_sorting, kernel{}, grids, blocks, lds_bytes, kargs)); \
     return ave_time;
 
 #define MOE_SORTING_DISPATCH_SUB_TOKEN_(row_, sub_token_onshot_, local_expert_masking_) \
@@ -194,7 +194,7 @@ float moe_sorting(moe_sorting_trait t, moe_sorting_args a, ck_tile::stream_confi
         auto kargs                            = kernel::MakeKargs(a);                               \
         const dim3 grids                      = kernel::GridSize(a);                                \
         const dim3 blocks                     = kernel::BlockSize(a);                               \
-        return ck_tile::make_moe_sorting_kernel<kernel::BLOCK_SIZE>(kernel{}, grids, blocks, 0, kargs);         \
+        return ck_tile::make_multidie_kernel<kernel::BLOCK_SIZE>(ck::launch_policy::moe_sorting, kernel{}, grids, blocks, 0, kargs);         \
     }()
 
 #define MOE_SORTING_MP_1(mesh_type_, unroll_num_, expert_masking_)                                  \
@@ -210,7 +210,7 @@ float moe_sorting(moe_sorting_trait t, moe_sorting_args a, ck_tile::stream_confi
         auto kargs                            = kernel::MakeKargs(a);                               \
         const dim3 grids                      = kernel::GridSize(a);                                \
         const dim3 blocks                     = kernel::BlockSize(a);                               \
-        return ck_tile::make_moe_sorting_kernel<kernel::BLOCK_SIZE>(kernel{}, grids, blocks, 0, kargs);         \
+        return ck_tile::make_multidie_kernel<kernel::BLOCK_SIZE>(ck::launch_policy::moe_sorting, kernel{}, grids, blocks, 0, kargs);         \
     }()
 #if MOE_SORTING_SUPPORT_LARGE_EXPERT
 #define MOE_SORTING_MP_2(mesh_type_, unroll_num_, expert_masking_)                                  \
@@ -226,7 +226,7 @@ float moe_sorting(moe_sorting_trait t, moe_sorting_args a, ck_tile::stream_confi
         auto kargs                            = kernel::MakeKargs(a);                               \
         const dim3 grids                      = kernel::GridSize(a);                                \
         const dim3 blocks                     = kernel::BlockSize(a);                               \
-        return ck_tile::make_moe_sorting_kernel(kernel{}, grids, blocks, 0, kargs);                             \
+        return ck_tile::make_multidie_kernel(ck::launch_policy::moe_sorting, kernel{}, grids, blocks, 0, kargs);                             \
     }()
 
 #define MOE_SORTING_MP_3(mesh_type_, unroll_num_, expert_masking_)                                  \
@@ -242,7 +242,7 @@ float moe_sorting(moe_sorting_trait t, moe_sorting_args a, ck_tile::stream_confi
         auto kargs                            = kernel::MakeKargs(a);                               \
         const dim3 grids                      = kernel::GridSize(a);                                \
         const dim3 blocks                     = kernel::BlockSize(a);                               \
-        return ck_tile::make_moe_sorting_kernel(kernel{}, grids, blocks, 0, kargs);                             \
+        return ck_tile::make_multidie_kernel(ck::launch_policy::moe_sorting, kernel{}, grids, blocks, 0, kargs);                             \
     }()
 #endif
 
@@ -260,7 +260,7 @@ float moe_sorting(moe_sorting_trait t, moe_sorting_args a, ck_tile::stream_confi
         const dim3 grids                      = kernel::GridSize(a);                                 \
         const dim3 blocks                     = kernel::BlockSize(a);                                \
         const auto lds_size                   = kernel::GetSmemSize(a);                              \
-        return ck_tile::make_moe_sorting_kernel<kernel::BLOCK_SIZE>(kernel{}, grids, blocks, lds_size, kargs);   \
+        return ck_tile::make_multidie_kernel<kernel::BLOCK_SIZE>(ck::launch_policy::moe_sorting, kernel{}, grids, blocks, lds_size, kargs);   \
     }()
 
 #define MOR_SORTING_MP_DISPATCH_(mesh_type_, token_vec_0_, token_vec_1_, token_vec_23_)  \

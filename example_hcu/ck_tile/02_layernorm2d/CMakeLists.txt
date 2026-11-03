@@ -26,6 +26,7 @@ add_custom_command(
   OUTPUT ${LAYERNORM2D_FWD_GEN_BLOBS}
   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_LIST_DIR}/generate.py
   --api ${LAYERNORM2D_FWD_ENABLE_APIS} --working_path ${CMAKE_CURRENT_BINARY_DIR} --gen_blobs
+  DEPENDS ${CMAKE_CURRENT_LIST_DIR}/generate.py
 )
 
 set(EXAMPLE_LAYERNORM2D_FWD "tile_example_layernorm2d_fwd")
@@ -46,7 +47,7 @@ target_compile_options(${EXAMPLE_LAYERNORM2D_FWD} PRIVATE ${EXAMPLE_LAYERNORM2D_
 # Match AITER JIT: gfx946 requires the multi-die HIP SDK and compiles both launch
 # paths. The runtime device properties decide whether to use multi-die launch.
 if("gfx946" IN_LIST GPU_TARGETS OR "gfx946" IN_LIST CMAKE_HIP_ARCHITECTURES)
-  target_compile_definitions(${EXAMPLE_LAYERNORM2D_FWD} PRIVATE CK_TILE_LAYERNORM_ENABLE_MULTIDIE=1)
+  target_compile_definitions(${EXAMPLE_LAYERNORM2D_FWD} PRIVATE CK_ENABLE_MULTIDIE=1)
 endif()
 
 # TODO: we have to turn off this global prop, otherwise the progress bar generated

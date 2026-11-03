@@ -21,7 +21,10 @@ cmake --build . --target tile_example_moe_sorting -j2
 ```
 
 Use `gfx936` or `gfx938` on the corresponding hardware. The gfx946 CMake target
-enables the sorting multi-die launcher; runtime HIP properties select the path.
+sets `CK_ENABLE_MULTIDIE=1` for the shared CK launcher in
+`ck/host_utility/multidie_kernel_launch.hpp`; runtime HIP properties select the path.
+The common interface and standalone regression are documented in
+[`00_kernel_launch`](../00_kernel_launch/README.md).
 
 ### Correctness without benchmarking
 
@@ -42,7 +45,7 @@ launcher; `AITER_MOE_SORTING_DIE_MODE=auto|off|linear` and
 `AITER_MOE_SORTING_DIE_CHUNK=1|2` select validation modes. Explicit `linear`
 requires gfx946 with at least two XCDs. Validate actual multi-die execution with
 per-XCD kernel statistics as well as CPU correctness; launch logs alone are
-insufficient. These environment variable names match the shared AITER launcher,
+insufficient. These environment variable names match AITER's CK sorting binding,
 but the executable and script do not depend on AITER.
 
 ## example

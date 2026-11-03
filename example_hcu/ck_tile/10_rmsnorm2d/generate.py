@@ -173,7 +173,7 @@ using traits_ = rmsnorm2d_fwd_traits_<XDataType_,
 
 #include <ck_tile/core.hpp>
 #include "rmsnorm2d_fwd.hpp"
-#include "rmsnorm2d_fwd_launch.hpp"
+#include "ck/host_utility/multidie_kernel_launch.hpp"
 #include <ck_tile/ops/epilogue.hpp>
 #include <iostream>
 
@@ -254,7 +254,7 @@ float rmsnorm2d_fwd_(const S& s, A a)
     if constexpr((Traits_::kFusedQuant == 0 || Traits_::kFusedQuant == 2) &&
                  !Traits_::kSaveInvRms && !Traits_::kSaveUnquant)
         return ck_tile::launch_kernel(
-            s, ck_tile::make_rmsnorm2d_fwd_kernel<blocks.x, kBlockPerCu>(Kernel{{}}, grids, blocks, 0, kargs));
+            s, ck_tile::make_multidie_kernel<blocks.x, kBlockPerCu>(ck::launch_policy::rmsnorm, Kernel{{}}, grids, blocks, 0, kargs));
     else
         return ck_tile::launch_kernel(
             s, ck_tile::make_kernel<blocks.x, kBlockPerCu>(Kernel{{}}, grids, blocks, 0, kargs));

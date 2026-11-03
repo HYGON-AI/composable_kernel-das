@@ -553,13 +553,13 @@ int main(int argc, char* argv[])
     else if(prec_i == "fp16" && prec_o == "int8" && prec_sm == "fp32" && prec_sy == "fp32" &&
             !save_rms && !save_unquant)
     {
-        return run<ck_tile::half_t, ck_tile::int8_t, float, float, true, false>(arg_parser) ? 0
+        return run<ck_tile::half_t, ck_tile::int8_t, float, float, false, false>(arg_parser) ? 0
                                                                                             : -2;
     }
     else if(prec_i == "bf16" && prec_o == "int8" && prec_sm == "fp32" && prec_sy == "fp32" &&
             !save_rms && !save_unquant)
     {
-        return run<ck_tile::bf16_t, ck_tile::int8_t, float, float, true, false>(arg_parser) ? 0
+        return run<ck_tile::bf16_t, ck_tile::int8_t, float, float, false, false>(arg_parser) ? 0
                                                                                             : -2;
     }
     // else if(prec_i == "fp16" && prec_o == "fp8" && prec_sm == "fp32" && prec_sy == "fp32" &&
@@ -577,12 +577,12 @@ int main(int argc, char* argv[])
     else if(prec_i == "fp16" && prec_o == "int8" && prec_sm == "fp32" && prec_sy == "fp32" &&
             !save_rms && save_unquant)
     {
-        return run<ck_tile::half_t, ck_tile::int8_t, float, float, true, true>(arg_parser) ? 0 : -2;
+        return run<ck_tile::half_t, ck_tile::int8_t, float, float, false, true>(arg_parser) ? 0 : -2;
     }
     else if(prec_i == "bf16" && prec_o == "int8" && prec_sm == "fp32" && prec_sy == "fp32" &&
             !save_rms && save_unquant)
     {
-        return run<ck_tile::bf16_t, ck_tile::int8_t, float, float, true, true>(arg_parser) ? 0 : -2;
+        return run<ck_tile::bf16_t, ck_tile::int8_t, float, float, false, true>(arg_parser) ? 0 : -2;
     }
     // else if(prec_i == "fp16" && prec_o == "fp8" && prec_sm == "fp32" && prec_sy == "fp32" &&
     //         !save_rms && save_unquant)
