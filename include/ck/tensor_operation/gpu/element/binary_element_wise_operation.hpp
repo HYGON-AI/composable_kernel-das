@@ -159,73 +159,25 @@ struct Bilinear
 {
     Bilinear(float alpha = 1.f, float beta = 1.f) : alpha_(alpha), beta_(beta){};
 
+    // Generic y = alpha * x0 + beta * x1 for any operand type combination.
+    // Compute in fp32 (fp64 only when every operand is fp64) and store with an
+    // explicit type_convert<Y>: bhalf_t is a plain ushort here, so assigning a
+    // float to y directly would truncate to integer instead of rounding to bf16.
     template <typename Y, typename X0, typename X1>
-    __host__ __device__ constexpr void operator()(Y&, const X0&, const X1&) const;
-
-    template <>
-    __host__ __device__ constexpr void
-    operator()<double, double, double>(double& y, const double& x0, const double& x1) const
+    __host__ __device__ constexpr void operator()(Y& y, const X0& x0, const X1& x1) const
     {
-        y = alpha_ * x0 + beta_ * x1;
-    };
+        if constexpr(std::is_same_v<Y, double> && std::is_same_v<X0, double> &&
+                     std::is_same_v<X1, double>)
+        {
+            y = alpha_ * x0 + beta_ * x1;
+        }
+        else
+        {
+            const float y_tmp = alpha_ * type_convert<float>(x0) + beta_ * type_convert<float>(x1);
+            y                 = type_convert<Y>(y_tmp);
+        }
+    }
 
-    template <>
-    __host__ __device__ constexpr void
-    operator()<float, float, float>(float& y, const float& x0, const float& x1) const
-    {
-        y = alpha_ * x0 + beta_ * x1;
-    };
-
-    template <>
-    __host__ __device__ constexpr void
-    operator()<int8_t, int8_t, int8_t>(int8_t& y, const int8_t& x0, const int8_t& x1) const
-    {
-        y = type_convert<int8_t>(alpha_ * type_convert<float>(x0) +
-                                 beta_ * type_convert<float>(x1));
-    };
-
-
-    template <>
-    __host__ __device__ constexpr void
-    operator()<half_t, half_t, half_t>(half_t& y, const half_t& x0, const half_t& x1) const
-    {
-        y = type_convert<half_t>(alpha_) * x0 + type_convert<half_t>(beta_) * x1;
-    };
-
-    template <>
-    __host__ __device__ constexpr void
-    operator()<half_t, float, half_t>(half_t& y, const float& x0, const half_t& x1) const
-    {
-        y = type_convert<half_t>(alpha_ * x0 + beta_ * ck::type_convert<float>(x1));
-    };
-
-    template <>
-    __host__ __device__ constexpr void
-    operator()<bhalf_t, bhalf_t, bhalf_t>(bhalf_t& y, const bhalf_t& x0, const bhalf_t& x1) const
-    {
-        const float x0_tmp = type_convert<float>(x0);
-        const float x1_tmp = type_convert<float>(x1);
-        const float y_tmp  = alpha_ * x0_tmp + beta_ * x1_tmp;
-        y                  = type_convert<bhalf_t>(y_tmp);
-    };
-
-    template <>
-    __host__ __device__ constexpr void
-    operator()<bhalf_t, float, bhalf_t>(bhalf_t& y, const float& x0, const bhalf_t& x1) const
-    {
-        const float x1_tmp = ck::type_convert<float>(x1);
-        const float y_tmp  = alpha_ * x0 + beta_ * x1_tmp;
-        y                  = y_tmp;
-    };
-
-    template <>
-    __host__ __device__ constexpr void
-    operator()<int8_t, int32_t, int8_t>(int8_t& y, const int32_t& x0, const int8_t& x1) const
-    {
-        y = type_convert<int8_t>(alpha_ * type_convert<float>(x0) +
-                                 beta_ * type_convert<float>(x1));
-    };
-    
     float alpha_;
     float beta_;
 };

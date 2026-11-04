@@ -173,6 +173,7 @@ using traits_ = rmsnorm2d_fwd_traits_<XDataType_,
 
 #include <ck_tile/core.hpp>
 #include "rmsnorm2d_fwd.hpp"
+#include "ck/host_utility/multidie_kernel_launch.hpp"
 #include <ck_tile/ops/epilogue.hpp>
 #include <iostream>
 
@@ -222,7 +223,8 @@ float rmsnorm2d_fwd_(const S& s, A a)
 
     static constexpr bool UseSmoothInputScale = Traits_::kFusedQuant == 1;
     using DynamicQuantEpilogueProblem = ck_tile::DynamicQuantEpilogueProblem<ComputeDataType, SmoothScaleDataType, YScaleDataType, YDataType, typename Traits_::Shape,
-            ck_tile::DynamicQuantEpilogueTraits<false, Traits_::kPadN, UseSmoothInputScale, false,  true/*max3*/>>;
+            ck_tile::DynamicQuantEpilogueTraits<false, Traits_::kPadN, UseSmoothInputScale, false, true/*max3*/,
+                                               Traits_::kFusedQuant == 2 && !Traits_::kSaveUnquant>>;
 
     using DynamicQuantEpilogue = ck_tile::DynamicQuantEpilogue<DynamicQuantEpilogueProblem>;
 
@@ -247,8 +249,15 @@ float rmsnorm2d_fwd_(const S& s, A a)
     if(s.log_level_ > 0)
         std::cout << ", " << Kernel::GetName() << std::flush;
 
-    return ck_tile::launch_kernel(
-        s, ck_tile::make_kernel<blocks.x, kBlockPerCu>(Kernel{{}}, grids, blocks, 0, kargs));
+    // Plain and dynamic-quant inference share the topology-aware launch.
+    // Smooth quant and saved-statistics entry points retain their existing path.
+    if constexpr((Traits_::kFusedQuant == 0 || Traits_::kFusedQuant == 2) &&
+                 !Traits_::kSaveInvRms && !Traits_::kSaveUnquant)
+        return ck_tile::launch_kernel(
+            s, ck_tile::make_multidie_kernel<blocks.x, kBlockPerCu>(ck::launch_policy::rmsnorm, Kernel{{}}, grids, blocks, 0, kargs));
+    else
+        return ck_tile::launch_kernel(
+            s, ck_tile::make_kernel<blocks.x, kBlockPerCu>(Kernel{{}}, grids, blocks, 0, kargs));
 }}
 
 """
@@ -305,9 +314,10 @@ float rmsnorm2d_fwd(rmsnorm2d_fwd_traits t,
                 r={F_instance_func}(s, a);
 """
 
-    def __init__(self, working_path, kernel_filter):
+    def __init__(self, working_path, kernel_filter, enable_fp8=False):
         self.working_path = working_path
         self.kernel_filter = kernel_filter
+        self.enable_fp8 = enable_fp8
 
     class k_fuesd_add_enum(IntEnum):
         F_NO_ADD = 0
@@ -490,8 +500,8 @@ float rmsnorm2d_fwd(rmsnorm2d_fwd_traits t,
                         inner_str += self.API_INNER_CASE.format(F_if = get_if_str(idx_in_n, len_in_n, False),
                                             F_VEC_COND = _cond, F_instance_func=ins.call_name)
                     #inner_str = inner_str + vec_str
-                n_cnd = f'(a.n <= {n_})' if (i_n < len(blob_per_t) - 1) else ''
-                n_str += self.API_PER_N_CASE.format(F_if = get_if_str(i_n, len(blob_per_t)), F_N_COND=n_cnd, F_inner_dispatch=inner_str)
+                n_cnd = '' if n_ == 'big' else f'(a.n <= {n_})'
+                n_str += self.API_PER_N_CASE.format(F_if = get_if_str(i_n, len(blob_per_t), n_ == 'big'), F_N_COND=n_cnd, F_inner_dispatch=inner_str)
             prec_i, prec_o = dtype_.split(',')
             d_str += self.API_PER_DTYPE.format(F_if = get_if_str(i_d, len(t_dtype_dict), False), F_i_type=prec_i, F_o_type=prec_o, F_per_n_case=n_str)
 
@@ -506,9 +516,7 @@ float rmsnorm2d_fwd(rmsnorm2d_fwd_traits t,
         h_traits = rmsnorm_fwd_codegen.h_traits
         h_instance = rmsnorm_fwd_codegen.h_instance
 
-        #TODO:support fp8
-        # dynamic_quant_out_dtype = ['int8', 'fp8']
-        dynamic_quant_out_dtype = ['int8']
+        dynamic_quant_out_dtype = ['int8', 'fp8']
         # some predefined support range
         # (prec_i,prec_o) for simplicity this string will be used as key for dict
         scale_list = [('fp32,fp32')]
@@ -517,9 +525,10 @@ float rmsnorm2d_fwd(rmsnorm2d_fwd_traits t,
         #                 ('fp16,int8'), ('bf16,int8'),
         #                 ('fp16,fp8'), ('bf16,fp8')] # NOTE: only fused-dynamic-quant use int8 out
 
-        #TODO:support fp8
         dtype_list = [('fp16,fp16'), ('bf16,bf16'),
                         ('fp16,int8'), ('bf16,int8')] # NOTE: only fused-dynamic-quant use int8 out        
+        if self.enable_fp8:
+            dtype_list += ['fp16,fp8', 'bf16,fp8']
         #fused_add_list = [0, 1, 2]
         #fused_sweep_list = [0, 1, 2] # NOTE: only single pass can use fused (smooth) dynamic quant
         fused_add_list = [0, 1]
@@ -584,6 +593,9 @@ float rmsnorm2d_fwd(rmsnorm2d_fwd_traits t,
             for dtype, scale_type, fused_add, fused_quant, save_unquant in itertools.product(dtype_list, scale_list, fused_add_list, fused_sweep_list, bool_list):
                 prec_i, prec_o = dtype.split(',')
                 scale_sm, scale_y = scale_type.split(',')
+                # FP8 generation covers only the two dynamic-quant inference APIs.
+                if prec_o == 'fp8' and (fused_quant != 2 or save_unquant):
+                    continue
                 if prec_o in dynamic_quant_out_dtype and fused_quant != 1 and fused_quant != 2:
                     continue # skip non dynamic quant case
                 if (fused_quant == 1 or fused_quant == 2) and hs_key == 'big':
@@ -640,14 +652,14 @@ def list_blobs(args):
     api_list = args.api.split(',')
     for api in api_list:
         if api == 'fwd':
-            rmsnorm_fwd_codegen(args.working_path, args.filter).list_blobs()
+            rmsnorm_fwd_codegen(args.working_path, args.filter, args.enable_fp8).list_blobs()
 
 
 def gen_blobs(args):
     api_list = args.api.split(',')
     for api in api_list:
         if api == 'fwd':
-            rmsnorm_fwd_codegen(args.working_path, args.filter).gen_blobs()
+            rmsnorm_fwd_codegen(args.working_path, args.filter, args.enable_fp8).gen_blobs()
 
 
 if __name__ == "__main__":
@@ -716,6 +728,8 @@ if __name__ == "__main__":
         help="codegen receipt."
     )
 
+    parser.add_argument('--enable-fp8', action='store_true',
+                        help='generate FP8 dynamic-quant inference instances')
     args = parser.parse_args()
 
     # print(f'{args.list_blobs}-{args.gen_blobs}')

@@ -176,22 +176,34 @@ CK_TILE_DEVICE void GdnOutputFwdPipeline<Problem>::operator()(Kargs args) const
     ck_tile::block_sync_lds(); // Sync K load
 
     // 3. Compute score = Q @ K^T
-    const ck_tile::index_t token_capacity =
-        args.is_varlen ? args.total_tokens : args.num_sequences * args.total_tokens;
+    // Q is addressable only up to this sequence's end.  A short tail chunk holds
+    // fewer than kRowTile rows, so the view is bounded by `q_rows` and right
+    // padded up to the tile length: the surplus lanes become invalid, and the
+    // masked load below never touches memory past `eos`.  A full chunk keeps the
+    // check disabled, so the common case pays nothing.
+    const ck_tile::index_t q_rows = valid_tokens - row_begin; // > 0, see early return
     auto q_view = ck_tile::make_naive_tensor_view<ck_tile::address_space_enum::global>(
-        args.q + qh * kHeadDim,
-        ck_tile::make_tuple(token_capacity, ck_tile::number<kHeadDim>{}),
+        args.q +
+            (static_cast<int64_t>(token_begin + row_begin) * args.num_qk_heads + qh) *
+                kHeadDim,
+        ck_tile::make_tuple(q_rows, ck_tile::number<kHeadDim>{}),
         ck_tile::make_tuple(args.num_qk_heads * kHeadDim, ck_tile::number<1>{}),
         ck_tile::number<8>{},
         ck_tile::number<1>{});
+    auto q_padded_view = ck_tile::pad_tensor_view(
+        q_view,
+        ck_tile::make_tuple(ck_tile::number<kRowTile>{}, ck_tile::number<kHeadDim>{}),
+        ck_tile::sequence<true, false>{});
 
     auto load_q = [&](auto tile_seed) {
         auto q_window = ck_tile::make_tile_window(
-            q_view,
+            q_padded_view,
             ck_tile::make_tuple(ck_tile::number<kRowTile>{}, ck_tile::number<kHeadDim>{}),
-            ck_tile::multi_index<2>{token_begin + row_begin, 0},
+            ck_tile::multi_index<2>{0, 0},
             tile_seed.get_tile_distribution());
-        return ck_tile::load_tile(q_window);
+        if(full_chunk)
+            return ck_tile::load_tile(q_window, ck_tile::bool_constant<false>{});
+        return ck_tile::load_tile(q_window, ck_tile::bool_constant<true>{});
     };
 
     constexpr auto qk_gemm = QKGemm{};

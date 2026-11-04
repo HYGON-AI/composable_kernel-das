@@ -13,6 +13,8 @@
 
 namespace ck {
 
+#ifndef CK_GEMM_MMA_TILE_DESCRIPTOR_DEFINED
+#define CK_GEMM_MMA_TILE_DESCRIPTOR_DEFINED
 template <index_t MNXdlPerWave, index_t MNWaves, index_t MNPerXdl, typename TileDesc_K0_MN_K1>
 __host__ __device__ static constexpr auto
 MakeGemmMmaTileDescriptor_MN0_MN1_MN2_K(const TileDesc_K0_MN_K1&)
@@ -28,6 +30,8 @@ MakeGemmMmaTileDescriptor_MN0_MN1_MN2_K(const TileDesc_K0_MN_K1&)
         make_tuple(Sequence<0, 2>{}, Sequence<1>{}),
         make_tuple(Sequence<3>{}, Sequence<0, 1, 2>{}));
 }
+#endif
+
 
 template <index_t BlockSize,
           typename FloatAB,

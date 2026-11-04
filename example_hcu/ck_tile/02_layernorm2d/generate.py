@@ -183,7 +183,7 @@ using traits_ = layernorm2d_fwd_traits_<XDataType_,
 
 #include <ck_tile/core.hpp>
 #include "layernorm2d_fwd.hpp"
-#include "layernorm2d_fwd_launch.hpp"
+#include "ck/host_utility/multidie_kernel_launch.hpp"
 #include <ck_tile/ops/epilogue.hpp>
 #include <iostream>
 
@@ -203,7 +203,7 @@ float layernorm2d_fwd_(const S& s, A a)
     // Runtime selection leaves the existing gfx936/gfx938 instances unchanged.
     if constexpr(Traits_::ThreadPerBlock_N == 1024)
     {{
-        if(ck_tile::layernorm2d_detail::is_gfx946())
+        if((ck_tile::get_hip_device_info().arch_name == "gfx946"))
         {{
             using Gfx946Traits = traits_<typename Traits_::XDataType,
                                          typename Traits_::YDataType,
@@ -272,7 +272,7 @@ float layernorm2d_fwd_(const S& s, A a)
         std::cout << ", " << Kernel::GetName() << std::flush;
 
     return ck_tile::launch_kernel(
-        s, ck_tile::make_layernorm2d_fwd_kernel<blocks.x, kBlockPerCu>(Kernel{{}}, grids, blocks, 0, kargs));
+        s, ck_tile::make_multidie_kernel<blocks.x, kBlockPerCu>(ck::launch_policy::layernorm, Kernel{{}}, grids, blocks, 0, kargs));
 }}
 
 """

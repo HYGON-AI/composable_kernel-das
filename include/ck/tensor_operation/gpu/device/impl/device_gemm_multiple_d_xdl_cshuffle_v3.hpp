@@ -21,7 +21,7 @@
 #include "ck/tensor_operation/gpu/device/gemm_specialization.hpp"
 #include "ck/tensor_operation/gpu/grid/gridwise_gemm_xdl_cshuffle_v3_multi_d.hpp"
 #include "ck/host_utility/device_prop.hpp"
-#include "ck/host_utility/kernel_launch.hpp"
+#include "ck/host_utility/multidie_kernel_launch.hpp"
 #include "ck/host_utility/flush_cache.hpp"
 
 namespace ck {
@@ -446,7 +446,7 @@ struct DeviceGemmMultiD_Xdl_CShuffle_V3 : public DeviceGemmV2R1<ALayout,
                                                          arg.M * arg.N * sizeof(CDataType),
                                                          stream_config.stream_id_));
 
-                    ave_time = launch_and_time_kernel(
+                    ave_time = ck::launch_and_time_multidie_kernel(ck::launch_policy::w8a8,
                         stream_config, kernel, dim3(gdx, gdy, gdz), dim3(BlockSize), 0, arg);
                 }
             };

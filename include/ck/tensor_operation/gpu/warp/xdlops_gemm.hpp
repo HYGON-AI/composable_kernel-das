@@ -471,13 +471,13 @@ template <>
 struct mfma_type<MfmaInstr::mfma_i32_16x16x32i8>
 {
     static constexpr index_t group_size =
-#if defined(__gfx928__) || defined(__gfx92a__) || defined(__gfx936__) || defined(__gfx938__)
+#if defined(__gfx928__) || defined(__gfx92a__) || defined(__gfx936__) || defined(__gfx938__) || defined(__gfx946__)
         1;
 #else
         4;
 #endif
     static constexpr index_t num_groups_per_blk =
-#if defined(__gfx928__) || defined(__gfx92a__) || defined(__gfx936__) || defined(__gfx938__)
+#if defined(__gfx928__) || defined(__gfx92a__) || defined(__gfx936__) || defined(__gfx938__) || defined(__gfx946__)
         4;
 #else
         1;
@@ -601,6 +601,11 @@ struct mfma_is_supported_on_hcu<MfmaInstr::mfma_f32_16x16x32_fp8_fp8>
 #endif
 
 #if defined(__gfx946__)
+template <>
+struct mfma_is_supported_on_hcu<MfmaInstr::mfma_i32_16x16x32i8>
+{
+    static constexpr bool value = true;
+};
 template <>
 struct mfma_is_supported_on_hcu<MfmaInstr::mfma_f32_16x16x16bf16_1k>
 {
@@ -735,7 +740,8 @@ struct MfmaSelector
 #endif
     }
 
-#if defined(CK_USE_AMD_MFMA_GFX940)
+#if defined(CK_USE_AMD_MFMA_GFX940) || defined(__gfx946__) || \
+    (defined(CK_W8A8_NATIVE_I8_X32) && defined(__gfx938__))
     template <>
     static constexpr auto GetMfma<int8_t, 32, 32>()
     {
@@ -1096,7 +1102,8 @@ struct XdlopsGemm
 #elif defined(__gfx928__) || defined(__gfx92a__)
         !is_same<base_type, double>::value && MPerXdlops == 16 && NPerXdlops == 16;
 #elif defined(__gfx946__)
-        is_same<base_type, f8_t>::value && MPerXdlops == 16 && NPerXdlops == 16;
+        (is_same<base_type, f8_t>::value || is_same<base_type, int8_t>::value) &&
+        MPerXdlops == 16 && NPerXdlops == 16;
 #elif defined(__gfx926__)
         is_same<base_type, float>::value && MPerXdlops == 16 && NPerXdlops == 16;
 #else

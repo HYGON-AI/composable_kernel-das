@@ -26,6 +26,7 @@ struct intrin_mfma_f32_16x16x32_fp8_fp8<16, 16>
 #if defined(__gfx92a__) || defined(__gfx938__) || defined(__gfx946__)
         intrin_mmac_f32_16x16x32f8_f8(bit_cast<int32x2_t>(a), bit_cast<int32x2_t>(b), c);
 #elif defined(__HIP_DEVICE_COMPILE__)
+        swallow(a, b, c);
         static_assert(sizeof(FloatC) == 0, "FP8 XDL 16x16 requires gfx92a, gfx938 or gfx946");
 #else
         swallow(a, b, c);
@@ -523,7 +524,7 @@ struct intrin_mfma_i32_16x16x32i8<16, 16>
     template <class FloatC>
     __device__ static void Run(const int8x8_t& reg_a, const int8x8_t& reg_b, FloatC& reg_c)
     {
-#if defined(__gfx928__) || defined(__gfx92a__) || defined(__gfx936__) || defined(__gfx938__)
+#if defined(__gfx928__) || defined(__gfx92a__) || defined(__gfx936__) || defined(__gfx938__) || defined(__gfx946__)
         intrin_mmac_i32_16x16x32i8(bit_cast<int32x2_t>(reg_a),
                                    bit_cast<int32x2_t>(reg_b),
                                    reg_c);
