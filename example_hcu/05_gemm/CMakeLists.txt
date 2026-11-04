@@ -4,6 +4,14 @@
 # hcu examples
 add_custom_target(example_gemm_mmac)
 
+# Public upstream WMMA API, executed through HCU XDL/MMAC.
+add_custom_target(example_gemm_wmma)
+foreach(dtype fp16 bf16)
+    add_example_executable(example_gemm_wmma_${dtype}
+        gemm_wmma_${dtype}.cpp --test)
+    add_dependencies(example_gemm_wmma example_gemm_wmma_${dtype})
+endforeach()
+
 add_example_executable(example_gemm_mmac_nt_fp16 gemm_mmac_nt_fp16.cpp)
 # add_example_executable(example_gemm_mmac_tt_fp16 gemm_mmac_tt_fp16.cpp)
 # add_example_executable(example_gemm_mmac_tn_fp16 gemm_mmac_tn_fp16.cpp)
