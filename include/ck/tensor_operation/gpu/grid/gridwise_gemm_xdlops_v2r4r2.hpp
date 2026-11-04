@@ -84,7 +84,8 @@ template <index_t BlockSize,
           index_t CShuffleMRepeatPerShuffle,
           index_t CShuffleNRepeatPerShuffle,
           index_t CBlockTransferScalarPerVector_NWaveNPerXDL,
-          typename CBlockTransferClusterLengths_MBlock_MPerBlock_NBlock_NPerBlock>
+          typename CBlockTransferClusterLengths_MBlock_MPerBlock_NBlock_NPerBlock,
+          bool UseGroupedSplitKPath = false>
 struct GridwiseGemm_bk0mk1_bk0nk1_mn_xdlops_v2r4r2
 {
     static constexpr auto I0 = Number<0>{};
@@ -188,9 +189,20 @@ struct GridwiseGemm_bk0mk1_bk0nk1_mn_xdlops_v2r4r2
 
     __host__ __device__ static auto CalculateK0(index_t K, index_t K_Batch = 1)
     {
-        // k_batch * k0 * k0_per_block * k1
-        auto K_t = K_Batch * K0PerBlock * K1;
-        return (K + K_t - 1) / K_t * K0PerBlock;
+        if constexpr(UseGroupedSplitKPath)
+        {
+            // CheckShape validates the result, but K + K_t can still exceed
+            // index_t while the rounded result fits. Widen before adding.
+            const long_index_t K_t = static_cast<long_index_t>(K_Batch) * K0PerBlock * K1;
+            return static_cast<index_t>((static_cast<long_index_t>(K) + K_t - 1) / K_t *
+                                        K0PerBlock);
+        }
+        else
+        {
+            // k_batch * k0 * k0_per_block * k1
+            auto K_t = K_Batch * K0PerBlock * K1;
+            return (K + K_t - 1) / K_t * K0PerBlock;
+        }
     }
 
     __host__ __device__ static auto CalculateKPadded(index_t K, index_t K_Batch = 1)
@@ -311,7 +323,11 @@ struct GridwiseGemm_bk0mk1_bk0nk1_mn_xdlops_v2r4r2
             }
         }();
 
-        if constexpr(GemmSpec == tensor_operation::device::GemmSpecialization::MNPadding)
+        // The grouped path also uses MNKPadding (and single-dimension padding).
+        // Preserve the logical bounds so padded Set stores cannot overwrite a
+        // neighbouring row or the caller's stride padding.
+        if constexpr(GemmSpec == tensor_operation::device::GemmSpecialization::MNPadding ||
+                     UseGroupedSplitKPath)
         {
             return transform_tensor_descriptor(c_grid_desc_m_n,
                                                make_tuple(make_right_pad_transform(M, MPad - M),
@@ -775,7 +791,10 @@ struct GridwiseGemm_bk0mk1_bk0nk1_mn_xdlops_v2r4r2
 #else
         // gridwise GEMM pipeline
         const auto gridwise_gemm_pipeline =
-            GridwiseGemmPipeline_Selector<PipelineVersion::v2, 1, LoopScheduler::Default>();
+            GridwiseGemmPipeline_Selector<UseGroupedSplitKPath ? PipelineVersion::v1
+                                                               : PipelineVersion::v2,
+                                          1,
+                                          LoopScheduler::Default>();
 
         const index_t num_k_block_main_loop = __builtin_amdgcn_readfirstlane(
             (a_b_k0_m_k1_grid_desc.GetLength(I1) * a_b_k0_m_k1_grid_desc.GetLength(I3)) /
@@ -953,12 +972,39 @@ struct GridwiseGemm_bk0mk1_bk0nk1_mn_xdlops_v2r4r2
                     block_sync_lds();
 
                     // VGPR to LDS
-                    c_thread_copy_vgpr_to_lds.Run(
-                        c_m0_n0_m1_n1_m2_m3_m4_n2_thread_desc,
-                        make_tuple(mxdlperwave, nxdlperwave, I0, I0, I0, I0, I0, I0),
-                        c_thread_buf,
-                        c_block_desc_m0_n0_m1_n1_m2_m3_m4_n2,
-                        c_block_buf);
+#if defined(__gfx936__) || defined(__gfx938__)
+                    if constexpr(UseGroupedSplitKPath)
+                    {
+                        static_assert(MPerXDL == 16 && NPerXDL == 16);
+                        // Native MMAC: m = lane % 16, n = lane / 16 + 4 * reg.
+                        // Keep this adapter local to grouped Split-K; the legacy XDL
+                        // descriptor distributes these registers along M instead.
+                        const auto wave_idx = blockwise_gemm.GetWaveIdx();
+                        const index_t lane  = get_thread_local_1d_id() % 64;
+                        static_for<0, CShuffleMRepeatPerShuffle, 1>{}([&](auto sm) {
+                            static_for<0, CShuffleNRepeatPerShuffle, 1>{}([&](auto sn) {
+                                static_for<0, 4, 1>{}([&](auto reg) {
+                                    const index_t m = (sm * MWave + wave_idx[I0]) * 16 + lane % 16;
+                                    const index_t n =
+                                        (sn * NWave + wave_idx[I1]) * 16 + lane / 16 + 4 * reg;
+                                    constexpr index_t src =
+                                        ((mxdlperwave + sm) * NRepeat + nxdlperwave + sn) * 4 + reg;
+                                    const auto dst = c_block_desc_mblock_mperblock_nblock_nperblock
+                                                         .CalculateOffset(make_tuple(0, m, 0, n));
+                                    static_cast<FloatC*>(p_shared_block)[dst] =
+                                        type_convert<FloatC>(c_thread_buf[Number<src>{}]);
+                                });
+                            });
+                        });
+                    }
+                    else
+#endif
+                        c_thread_copy_vgpr_to_lds.Run(
+                            c_m0_n0_m1_n1_m2_m3_m4_n2_thread_desc,
+                            make_tuple(mxdlperwave, nxdlperwave, I0, I0, I0, I0, I0, I0),
+                            c_thread_buf,
+                            c_block_desc_m0_n0_m1_n1_m2_m3_m4_n2,
+                            c_block_buf);
 
                     // make sure it's safe to do ds_read
                     block_sync_lds();

@@ -12,6 +12,8 @@
 
 namespace ck {
 
+#ifndef CK_GEMM_MMA_TILE_DESCRIPTOR_DEFINED
+#define CK_GEMM_MMA_TILE_DESCRIPTOR_DEFINED
 template <index_t MNXdlPerWave, index_t MNWaves, index_t MNPerXdl, typename TileDesc_K0_MN_K1>
 __host__ __device__ static constexpr auto
 MakeGemmMmaTileDescriptor_MN0_MN1_MN2_K(const TileDesc_K0_MN_K1&)
@@ -27,6 +29,8 @@ MakeGemmMmaTileDescriptor_MN0_MN1_MN2_K(const TileDesc_K0_MN_K1&)
         make_tuple(Sequence<0, 2>{}, Sequence<1>{}),
         make_tuple(Sequence<3>{}, Sequence<0, 1, 2>{}));
 }
+#endif
+
 
 // FIXME: when transposeC = true, it's actually BlockwiseGemmMmac_k0mk1_k0nk1_m0n0m1n1m2m3m4n2_v1
 template <index_t BlockSize,

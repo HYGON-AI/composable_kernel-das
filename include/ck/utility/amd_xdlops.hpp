@@ -26,6 +26,7 @@ struct intrin_mfma_f32_16x16x32_fp8_fp8<16, 16>
 #if defined(__gfx92a__) || defined(__gfx938__) || defined(__gfx946__)
         intrin_mmac_f32_16x16x32f8_f8(bit_cast<int32x2_t>(a), bit_cast<int32x2_t>(b), c);
 #elif defined(__HIP_DEVICE_COMPILE__)
+        swallow(a, b, c);
         static_assert(sizeof(FloatC) == 0, "FP8 XDL 16x16 requires gfx92a, gfx938 or gfx946");
 #else
         swallow(a, b, c);
