@@ -123,7 +123,7 @@ struct BlockFmhaBwdDQDKDVPipelineKRKTRVR
                const KDramBlockWindowTmp& k_dram_block_window_tmp,
                const VDramBlockWindowTmp& v_dram_block_window_tmp,
                const BiasDramBlockWindowTmp& bias_dram_block_window_tmp,
-               const RandValDramBlockWindowTmp& randval_dram_block_window_tmp,
+               RandValDramBlockWindowTmp& randval_dram_block_window_tmp,
                const OGradDramBlockWindowTmp& do_dram_block_window_tmp,
                const LSEDramBlockWindowTmp& lse_dram_block_window_tmp,
                const DDramBlockWindowTmp& d_dram_block_window_tmp,
