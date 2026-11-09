@@ -564,7 +564,8 @@ struct mfma_is_supported_on_hcu<MfmaInstr::mfma_f32_16x16x4xf32>
 };
 #endif
 
-#if defined(__gfx928__) || defined(__gfx92a__) || defined(__gfx936__) || defined(__gfx938__)
+#if defined(__gfx926__) || defined(__gfx928__) || defined(__gfx92a__) || defined(__gfx936__) || \
+    defined(__gfx938__)
 template <>
 struct mfma_is_supported_on_hcu<MfmaInstr::mfma_f32_16x16x16f16>
 {
@@ -732,8 +733,8 @@ struct MfmaSelector
     template <>
     static constexpr auto GetMfma<bhalf_t, 16, 16>()
     {
-#if defined(CK_USE_AMD_MFMA_BF16_1K_OP) || defined(__gfx928__) || defined(__gfx92a__) || \
-    defined(__gfx936__) || defined(__gfx938__) || defined(__gfx946__)
+#if defined(CK_USE_AMD_MFMA_BF16_1K_OP) || defined(__gfx926__) || defined(__gfx928__) || \
+    defined(__gfx92a__) || defined(__gfx936__) || defined(__gfx938__) || defined(__gfx946__)
         return MfmaInstr::mfma_f32_16x16x16bf16_1k;
 #else
         return MfmaInstr::mfma_f32_16x16x8bf16;
