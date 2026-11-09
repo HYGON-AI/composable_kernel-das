@@ -136,7 +136,7 @@ struct intrin_mfma_f32_16x16x4f32<16, 16>
         intrin_mmac_f32_16x16x4f32(reg_a, reg_b, reg_c);
 #elif defined(CK_ARCH_HCU)
         intrin_mfma_unsupported_on_hcu(reg_a, reg_b, reg_c);
-#elif defined(__HIP_DEVICE_COMPILE__)
+#elif defined(__HIP_DEVICE_COMPILE__) && !defined(__gfx906__)
         reg_c.template AsType<float4_t>()(Number<0>{}) = __builtin_amdgcn_mfma_f32_16x16x4f32(
             reg_a, reg_b, reg_c.template AsType<float4_t>()[Number<0>{}], 0, 0, 0);
 #else
@@ -375,8 +375,8 @@ struct intrin_mfma_f32_16x16x16bf16_1k<16, 16>
     template <class FloatC>
     __device__ static void Run(const bhalf4_t& reg_a, const bhalf4_t& reg_b, FloatC& reg_c)
     {
-#if defined(__gfx928__) || defined(__gfx92a__) || defined(__gfx936__) || defined(__gfx938__) || \
-    defined(__gfx946__)
+#if defined(__gfx926__) || defined(__gfx928__) || defined(__gfx92a__) || defined(__gfx936__) || \
+    defined(__gfx938__) || defined(__gfx946__)
         intrin_mmac_f32_16x16x16bf16(
             bit_cast<int16x4_t>(reg_a), bit_cast<int16x4_t>(reg_b), reg_c);
 #elif defined(CK_ARCH_HCU)
@@ -426,7 +426,7 @@ struct intrin_mfma_f32_16x16x8bf16<16, 16>
             reg_c);
 #elif defined(CK_ARCH_HCU)
         intrin_mfma_unsupported_on_hcu(reg_a, reg_b, reg_c);
-#elif defined(__HIP_DEVICE_COMPILE__)
+#elif defined(__HIP_DEVICE_COMPILE__) && !defined(__gfx906__)
         reg_c.template AsType<float4_t>()(Number<0>{}) = __builtin_amdgcn_mfma_f32_16x16x8bf16(
             reg_a, reg_b, reg_c.template AsType<float4_t>()[Number<0>{}], 0, 0, 0);
 #else

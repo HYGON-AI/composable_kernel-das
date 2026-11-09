@@ -51,6 +51,63 @@ class HcuCodegenTest(unittest.TestCase):
                          for k in kernels}
             self.assertTrue({('s_no', 't'), ('s_mask', 't')} <= contracts)
 
+    def test_bwd_allows_mask_padding_and_dropout_combos(self):
+        # BWD 支持 causal mask、任意 seqlen（spad1d）、head_dim<=128（dpad/dvpad
+        # 档位 0/8/1 与 FWD 对齐）、非零 dropout（load 型，掩码来自 randval 缓冲）。
+        for target in ('gfx936', 'gfx938'):
+            pool, _, kernels, _ = fmha_bwd.get_bwd_blobs([target], '', 3, 'simplified', [64, 128])
+            self.assertTrue(kernels)
+            masks = {k.F_mask for k in kernels}
+            dropouts = {k.F_dropout for k in kernels}
+            pads = {(k.F_dpad, k.F_dvpad) for k in kernels}
+            self.assertTrue({'s_no', 's_mask'} <= masks)
+            self.assertTrue({'no', 'dropout_ld', 'dropout_ld_storerandval'} <= dropouts)
+            self.assertTrue({(0, 0), (8, 8), (1, 1)} <= pads)
+
+            api = pool.api
+            # head_dim 任意值（%1 档）与 %8 档分派存在
+            self.assertIn('t.hdim_q % 1 == 0', api)
+            self.assertIn('t.hdim_q % 8 == 0', api)
+            # seqlen_q 非 64 对齐（1D kernel padding 档）分派存在
+            self.assertIn('true /*t.seqlen_q % 64 != 0*/', api)
+            # causal mask 分派（simplified: 非 no_mask 即走 s_mask kernel）
+            self.assertIn('t.mask_type != mask_enum::no_mask', api)
+            # load 型 dropout 分派（含 storerandval 校验档）
+            self.assertIn('ck_tile::BlockDropoutBwdLoadRandval<false>', api)
+            self.assertIn('ck_tile::BlockDropoutBwdLoadRandval<true>', api)
+            # 非 HCU factory 不再生成 dropout 实例（pipeline 已移除 philox 重生成路径）
+            _, _, up_kernels, _ = fmha_bwd.get_bwd_blobs(['gfx950'], '', 3, 'simplified', [64, 128])
+            self.assertEqual({k.F_dropout for k in up_kernels}, {'no'})
+
+    def test_hcu_fwd_skpad_and_dropout_pipelines(self):
+        # FWD 支持任意 seqlen_k（skpad 档）与非零 dropout（逻辑 philox）。
+        for target in ('gfx936', 'gfx938'):
+            _, kernels = fmha_fwd.get_fwd_blobs([target], '', 3, [64, 128], 'simplified')
+            combos = {(k.F_pipeline.F_skpad, k.F_pipeline.F_dropout) for k in kernels}
+            self.assertTrue({('f', 'f'), ('t', 'f'), ('f', 't'), ('t', 't')} <= combos)
+
+    def test_fwd_api_dispatch_skpad_and_dropout(self):
+        import tempfile
+        from pathlib import Path
+        for target in ('gfx936', 'gfx938'):
+            with tempfile.TemporaryDirectory() as tmp:
+                out = Path(tmp)
+                fmha_fwd.write_blobs([target], out, '', 3, [64, 128], 'simplified')
+                api = (out / 'fmha_fwd_api.cpp').read_text()
+                # seqlen_k % 64 快速档与非对齐回退档
+                self.assertIn('a.seqlen_k % 64 == 0', api)
+                self.assertIn('a.cu_seqlen_k_ptr != nullptr', api)
+                # dropout 开/关互补档
+                self.assertIn('t.has_dropout == true', api)
+                self.assertIn('t.has_dropout == false', api)
+
+    def test_bwd_padding_dispatch_order_prefers_fast_paths(self):
+        # 严格对齐档在前（先 %64、再 %8、最后 %1），保证快路径优先命中。
+        pool, _, _, _ = fmha_bwd.get_bwd_blobs(['gfx936'], '', 3, 'simplified', [64, 128])
+        api = pool.api
+        self.assertLess(api.index('t.hdim_q % 64 == 0'), api.index('t.hdim_q % 8 == 0'))
+        self.assertLess(api.index('t.hdim_q % 8 == 0'), api.index('t.hdim_q % 1 == 0'))
+
     def test_target_features_and_generic_fallback(self):
         for module in self.modules:
             for target in ('gfx936', 'gfx938'):

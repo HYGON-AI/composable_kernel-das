@@ -1267,21 +1267,23 @@ class KernelComponentFactoryGfx936(KernelComponentFactoryGfx9):
                 "qr_async",
                 "row",
                 "t",
-                "f",
+                skpad,
                 "t",
                 "t",
                 "f",
                 "no",
                 lse,
-                "f",
+                drop,
                 "no",
                 mask,
                 "f",
                 "f",
                 "f",
             )
-            for mask in masks
+            for skpad in ("f", "t")
+            for drop in ("f", "t")
             for lse in ("f", "t")
+            for mask in masks
         ]
 
 

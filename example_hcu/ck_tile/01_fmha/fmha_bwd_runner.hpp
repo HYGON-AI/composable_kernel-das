@@ -32,23 +32,8 @@ enum class bwd_result
 };
 
 namespace ck_tile {
-template <typename RandValOutputDataType>
-CK_TILE_HOST void reference_batched_dropout_randval(HostTensor<RandValOutputDataType>& randval_b_m_n,
-                                                    ck_tile::index_t batch,
-                                                    uint64_t drop_seed,
-                                                    uint64_t drop_offset)
-{
-    // HCU移植: fallback only to keep the upstream runner compiling. HCU BWD
-    // currently generates no-dropout instances, so this path is not exercised
-    // by the bring-up smoke tests.
-    randval_b_m_n.ForEach([&](auto& self, const auto& idx) {
-        const uint64_t x = drop_seed + drop_offset + static_cast<uint64_t>(batch) * 1315423911ULL +
-                           static_cast<uint64_t>(idx[0]) * 2654435761ULL +
-                           static_cast<uint64_t>(idx[1]) * 97531ULL +
-                           static_cast<uint64_t>(idx[2]);
-        self(idx) = static_cast<RandValOutputDataType>((x >> 8) & 0xff);
-    });
-}
+// reference_batched_dropout_randval 已移至 utils.hpp，与 device 侧共享
+// LogicalDropoutRandomGenerator
 } // namespace ck_tile
 
 // different threshold for different dtype
@@ -400,6 +385,18 @@ bwd_result fmha_bwd_run(mode_enum mode,
         }
     }
 
+    if(p_drop > 0.0f)
+    {
+        randval_host.ForEach([&](auto& self, const auto& idx) {
+            self(idx) = static_cast<RandValOutputDataType>(
+                ck_tile::LogicalDropoutRandomGenerator::randval(drop_seed,
+                                                                drop_offset,
+                                                                idx[0] * nhead + idx[1],
+                                                                idx[2],
+                                                                idx[3]));
+        });
+    }
+
     ck_tile::DeviceMem q_buf(q_host.get_element_space_size_in_bytes());
     ck_tile::DeviceMem k_buf(k_host.get_element_space_size_in_bytes());
     ck_tile::DeviceMem v_buf(v_host.get_element_space_size_in_bytes());
@@ -480,6 +477,11 @@ bwd_result fmha_bwd_run(mode_enum mode,
     v_buf.ToDevice(v_host.data());
     bias_buf.ToDevice(bias_host.data());
     do_buf.ToDevice(do_host.data());
+    
+    if(p_drop > 0.0f)
+    {
+        randval_buf.ToDevice(randval_host.data());
+    }
     // seqstart_q/k were already ToDevice'd above before prepare_workspace_async.
     if(mode == mode_enum::group)
     {

@@ -457,7 +457,7 @@ class KernelComponentFactoryBase:
         dvpad: int,
         deterministic: str,
     ) -> bool:
-        return True
+        return dropout == "no"
 
 
 class KernelComponentFactoryGfx9(KernelComponentFactoryBase):
@@ -532,19 +532,24 @@ class KernelComponentFactoryGfx936(KernelComponentFactoryGfx9):
         dvpad: int,
         deterministic: str,
     ) -> bool:
-        # HCU移植: 首轮 HCU BWD bring-up 只生成最小 batch/no-pad/no-dropout
-        # 基础闭包。dropout/dbias/group/pad/trload 后续在 dQ/dK/dV 正确后逐个打开。
+        #   在最小 batch/no-pad/no-dropout 闭包基础上放开
+        #   - mask: s_no / s_mask（simplified mask，含 causal top-left/bottom-right）
+        #   - dropout: load 型（dropout_ld / dropout_ld_storerandval），掩码来自
+        #     FWD 写出的 randval 缓冲，kernel 不重生成 philox
+        #   - spad1d: f / t，t 覆盖 seqlen_q % 64 != 0（dot_do_o/convert_dq 1D kernel）
+        #   - dpad/dvpad: (0,0)/(8,8)/(1,1)，与 FWD 一致覆盖 head_dim <= 128
+        #     （8: %8 对齐快速档；1: 任意 head_dim）
+        # 仍保持：batch 模式、无 bias/dbias、非确定性、tr_load=f。
         return (
             dtype in ["fp16", "bf16"]
             and tr_load == "f"
             and mode == "batch"
-            and mask == "s_no"
+            and mask in ["s_no", "s_mask"]
             and bias == "no"
             and dbias == "f"
-            and dropout == "no"
-            and spad1d == "f"
-            and dpad == 0
-            and dvpad == 0
+            and dropout in ["no", "dropout_ld", "dropout_ld_storerandval"]
+            and dpad == dvpad
+            and dpad in [0, 8, 1]
             and deterministic == "f"
         )
 

@@ -240,6 +240,12 @@ endif()
 list(APPEND FMHA_BWD_PRIVATE_COMPILE_OPTIONS -DCK_TILE_FLOAT_TO_BFLOAT16_DEFAULT=3)
 list(APPEND FMHA_BWD_INTERFACE_COMPILE_OPTIONS -DCK_TILE_FLOAT_TO_BFLOAT16_DEFAULT=3)
 
+# Enable host-side dropout reference validation (logical philox model shared with
+# the device side; see utils.hpp and block_dropout.hpp). Needed by both the fwd
+# example (fmha_fwd_runner.hpp) and bwd example (fmha_bwd_runner.hpp).
+list(APPEND FMHA_FWD_INTERFACE_COMPILE_OPTIONS -DCK_TILE_FMHA_ENABLE_DROPOUT_REF=1)
+list(APPEND FMHA_BWD_INTERFACE_COMPILE_OPTIONS -DCK_TILE_FMHA_ENABLE_DROPOUT_REF=1)
+
 # BWD kernel/pipeline headers in ck_tile/ops/fmha.hpp are gated behind this macro
 # (kept off during the FWD-only HCU port). Enable it for all BWD instances and the
 # bwd example that consumes them.

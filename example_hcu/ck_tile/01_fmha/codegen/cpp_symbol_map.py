@@ -111,6 +111,8 @@ DROPOUT_MAP = {
     "dropout_wg32_storerandval": "ck_tile::BlockDropoutBwd<true,  true,  true >",
     "dropout_wg16": "ck_tile::BlockDropoutBwd<true,  false, false>",
     "dropout_wg16_storerandval": "ck_tile::BlockDropoutBwd<true,  false, true >",
+    "dropout_ld": "ck_tile::BlockDropoutBwdLoadRandval<false>",
+    "dropout_ld_storerandval": "ck_tile::BlockDropoutBwdLoadRandval<true>",
 }
 
 DROPOUT_CHECK_MAP = {
@@ -119,6 +121,8 @@ DROPOUT_CHECK_MAP = {
     "dropout_wg32_storerandval": "t.has_dropout == true && t.is_store_randval == true",
     "dropout_wg16": "t.has_dropout == true && t.is_store_randval == false",
     "dropout_wg16_storerandval": "t.has_dropout == true && t.is_store_randval == true",
+    "dropout_ld": "t.has_dropout == true && t.is_store_randval == false",
+    "dropout_ld_storerandval": "t.has_dropout == true && t.is_store_randval == true",
 }
 
 ROPE_MAP = {

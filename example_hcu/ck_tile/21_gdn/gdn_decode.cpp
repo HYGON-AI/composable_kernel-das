@@ -199,6 +199,7 @@ int run_decode(const ck_tile::ArgParser& parser)
         store_final_state
             ? static_cast<float*>(final_buf.GetDeviceBuffer())
             : nullptr,
+        nullptr,
         b,
         t,
         h,
@@ -206,6 +207,8 @@ int run_decode(const ck_tile::ArgParser& parser)
         head_dim,
         head_dim,
         sequences,
+        0,
+        0,
         scale,
         float32_type_code,
         float32_type_code,
