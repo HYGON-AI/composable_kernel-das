@@ -16,6 +16,9 @@
 
 #include "ck_tile/core/container/span.hpp"
 
+#include "ck_tile/host/host_tensor.hpp"
+#include "ck_tile/ops/fmha/block/block_dropout.hpp"
+
 enum class mode_enum
 {
     batch = 0,
@@ -252,3 +255,20 @@ std::enable_if_t<std::is_integral_v<Int>> iota_shuffle(RandomAccessIterator firs
     std::iota(first, last, value);
     std::shuffle(first, last, random_engine);
 }
+
+namespace ck_tile
+{
+template <typename RandValOutputDataType>
+CK_TILE_HOST void reference_batched_dropout_randval(
+    HostTensor<RandValOutputDataType>& randval_b_m_n,
+    ck_tile::index_t batch,
+    uint64_t drop_seed,
+    uint64_t drop_offset)
+{
+    const ck_tile::index_t nheads = static_cast<ck_tile::index_t>(randval_b_m_n.get_length(0));
+    randval_b_m_n.ForEach([&](auto& self, const auto& idx) {
+        self(idx) = static_cast<RandValOutputDataType>(LogicalDropoutRandomGenerator::randval(
+            drop_seed, drop_offset, batch * nheads + idx[0], idx[1], idx[2]));
+    });
+}
+} // namespace ck_tile

@@ -27,6 +27,24 @@ struct NullBlockDropout
     }
 };
 
+struct LogicalDropoutRandomGenerator
+{
+    CK_TILE_HOST_DEVICE static uint8_t randval(uint64_t seed,
+                                               uint64_t offset,
+                                               index_t batch_head,
+                                               index_t m,
+                                               index_t n)
+    {
+        const uint64_t lane = static_cast<uint64_t>((m % 32) * 2 + ((n % 32) / 16));
+        philox ph(seed, offset + static_cast<uint64_t>(batch_head) * 64 + lane);
+        unsigned long long subsequence = static_cast<unsigned long long>(
+            static_cast<uint64_t>(m / 32) | (static_cast<uint64_t>(n / 32) << 32));
+        uint8_t random_uint8_t[16];
+        ph.get_random_16x8(random_uint8_t, reinterpret_cast<unsigned long long&>(subsequence));
+        return random_uint8_t[n % 16];
+    }
+};
+
 struct BlockDropout
 {
     CK_TILE_HOST_DEVICE BlockDropout(index_t i_batch,
@@ -198,11 +216,14 @@ struct BlockDropout
             make_static_distributed_tensor<uint8_t>(MakeRandValTileDistribution<BlockGemm>());
         static_assert(randval_dist_generated.kThreadElementSpaceSize == 16);
 
+        static_assert(kMPerBlock == kMPerStep && kNPerBlock == kNPerStep,
+                      "dropout randval assumes the block gemm covers the P tile in one step");
+
         auto randval_lds_read_window =
             make_tile_window(randval_lds_window.get_bottom_tensor_view(),
                              randval_lds_window.get_window_lengths(),
                              randval_lds_window.get_window_origin(),
-                             MakeRandValLdsShuffleTileDistribution<BlockGemm>());
+                             p_compute.get_tile_distribution());
 
         const int start_m0_idx = randval_dram_window.get_window_origin().at(number<0>{});
         if(is_store_randval)
@@ -270,12 +291,8 @@ struct BlockDropout
                 constexpr auto randval_spans = decltype(randval)::get_distributed_spans();
                 sweep_tile_span(randval_spans[number<0>{}], [&](auto idx0) {
                     sweep_tile_span(randval_spans[number<1>{}], [&](auto idx1) {
-                        constexpr auto p_idx0 = tile_distributed_index<i_m0>{};
-                        constexpr auto p_idx1 =
-                            tile_distributed_index<i_n0, idx1.impl_.at(1), idx1.impl_.at(2)>{};
-                        constexpr auto p_idx = ck_tile::make_tuple(p_idx0, p_idx1);
-                        constexpr auto r_idx = ck_tile::make_tuple(idx0, idx1);
-                        p_compute(p_idx)     = randval[r_idx] <= p_undrop_in_uint8_t
+                        constexpr auto p_idx = ck_tile::make_tuple(idx0, idx1);
+                        p_compute(p_idx)     = randval[p_idx] <= p_undrop_in_uint8_t
                                                    ? p_compute[p_idx] * rp_undrop
                                                    : PComputeDataType(0);
                     });
@@ -516,11 +533,14 @@ struct BlockDropoutBwd<true, IsWG32_, IsStoreRandval_>
             make_static_distributed_tensor<uint8_t>(MakeRandValTileDistribution<BlockGemm>());
         static_assert(randval_dist_generated.kThreadElementSpaceSize == 16);
 
+        static_assert(kMPerBlock == kMPerStep && kNPerBlock == kNPerStep,
+                      "dropout randval assumes the block gemm covers the P tile in one step");
+
         auto randval_lds_read_window =
             make_tile_window(randval_lds_window.get_bottom_tensor_view(),
                              randval_lds_window.get_window_lengths(),
                              randval_lds_window.get_window_origin(),
-                             MakeRandValLdsShuffleTileDistribution<BlockGemm>());
+                             p_compute.get_tile_distribution());
         //TODO: support get_sub_warp_id for WASP
         static_for<0, kMPerBlock / kMPerStep, 1>{}([&](auto i_m0) {
             static_for<0, kNPerBlock / kNPerStep, 1>{}([&](auto i_n0) {
@@ -549,12 +569,8 @@ struct BlockDropoutBwd<true, IsWG32_, IsStoreRandval_>
                 constexpr auto randval_spans = decltype(randval)::get_distributed_spans();
                 sweep_tile_span(randval_spans[number<0>{}], [&](auto idx0) {
                     sweep_tile_span(randval_spans[number<1>{}], [&](auto idx1) {
-                        constexpr auto p_idx0 = tile_distributed_index<i_m0>{};
-                        constexpr auto p_idx1 =
-                            tile_distributed_index<i_n0, idx1.impl_.at(1), idx1.impl_.at(2)>{};
-                        constexpr auto p_idx = ck_tile::make_tuple(p_idx0, p_idx1);
-                        constexpr auto r_idx = ck_tile::make_tuple(idx0, idx1);
-                        p_compute(p_idx)     = randval[r_idx] <= p_undrop_in_uint8_t
+                        constexpr auto p_idx = ck_tile::make_tuple(idx0, idx1);
+                        p_compute(p_idx)     = randval[p_idx] <= p_undrop_in_uint8_t
                                                    ? p_compute[p_idx] * rp_undrop
                                                    : PComputeDataType(0);
                     });
@@ -704,6 +720,70 @@ struct BlockDropoutBwd<true, IsWG32_, IsStoreRandval_>
 
     ck_tile::philox ph;
     const float rp_undrop;
+    const uint8_t p_undrop_in_uint8_t;
+};
+
+template <bool IsStoreRandval_>
+struct BlockDropoutBwdLoadRandval
+{
+    static constexpr bool IsDropout      = true;
+    static constexpr bool IsStoreRandval = IsStoreRandval_;
+
+    CK_TILE_HOST_DEVICE BlockDropoutBwdLoadRandval(index_t i_batch,
+                                                   index_t i_head,
+                                                   index_t nheads,
+                                                   unsigned long long seed,
+                                                   unsigned long long offset,
+                                                   float rp_undrop_,
+                                                   uint8_t p_undrop_in_uint8_t_)
+        : p_undrop_in_uint8_t(p_undrop_in_uint8_t_)
+    {
+        (void)i_batch;
+        (void)i_head;
+        (void)nheads;
+        (void)seed;
+        (void)offset;
+        (void)rp_undrop_;
+    }
+
+    template <typename BlockGemm, bool IsFwd = true, typename RandValDramBlockWindowTmp>
+    CK_TILE_HOST_DEVICE static constexpr auto
+    MakeRandvalDramWindow(RandValDramBlockWindowTmp& randval_dram_block_window_tmp,
+                          index_t seqlen_qk_start)
+    {
+        static_assert(!IsFwd, "BlockDropoutBwdLoadRandval is bwd-only");
+        const auto block_origin = randval_dram_block_window_tmp.get_window_origin();
+        return make_tile_window(randval_dram_block_window_tmp.get_bottom_tensor_view(),
+                                randval_dram_block_window_tmp.get_window_lengths(),
+                                {seqlen_qk_start, block_origin.at(number<1>{})}); // M/N
+    }
+
+    template <typename BlockGemm,
+              typename RandValOutputDataType,
+              typename PComputeWindow,
+              typename RandValDramWindow>
+    CK_TILE_HOST_DEVICE void Run(const index_t start_m0_idx,
+                                 const index_t start_n0_idx,
+                                 PComputeWindow& p,
+                                 RandValDramWindow& randval_dram_window) const
+    {
+        auto load_window = make_tile_window(randval_dram_window.get_bottom_tensor_view(),
+                                            randval_dram_window.get_window_lengths(),
+                                            {start_m0_idx, start_n0_idx},
+                                            p.get_tile_distribution());
+        const auto randval = load_tile(load_window);
+
+        constexpr auto p_spans = remove_cvref_t<decltype(p)>::get_distributed_spans();
+        sweep_tile_span(p_spans[number<0>{}], [&](auto idx0) {
+            sweep_tile_span(p_spans[number<1>{}], [&](auto idx1) {
+                constexpr auto i_j_idx = ck_tile::make_tuple(idx0, idx1);
+                p(i_j_idx)             = static_cast<uint8_t>(randval[i_j_idx]) <= p_undrop_in_uint8_t
+                                             ? p[i_j_idx]
+                                             : -p[i_j_idx];
+            });
+        });
+    }
+
     const uint8_t p_undrop_in_uint8_t;
 };
 

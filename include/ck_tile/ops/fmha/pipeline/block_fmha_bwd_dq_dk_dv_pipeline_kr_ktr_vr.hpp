@@ -705,23 +705,7 @@ struct BlockFmhaBwdDQDKDVPipelineKRKTRVR
                 });
             });
 
-            if constexpr(FmhaDropout::IsDropout)
-            {
-                dropout.template Run<decltype(gemm_0), RandValOutputDataType>(
-                    seqlen_q_step, k_origin.at(number<0>{}), p, randval_dram_window);
-            }
-            const auto p_gemm = [&]() {
-                if constexpr(FmhaDropout::IsDropout)
-                {
-                    return tile_elementwise_in(
-                        [](const auto& x) { return type_convert<GemmDataType>(x > 0.f ? x : 0.f); },
-                        p);
-                }
-                else
-                {
-                    return cast_tile<GemmDataType>(p);
-                }
-            }();
+            const auto p_gemm = cast_tile<GemmDataType>(p);
 
             // [HCU移植] output-layout softmax：HCU MMAC 内部 C layout 不能直接做行规约，
             // 因此在 output-layout 中重新计算 P（而非使用内部 layout 的 p/p_gemm）。
@@ -752,7 +736,23 @@ struct BlockFmhaBwdDQDKDVPipelineKRKTRVR
                     p_out_main(i_j_idx) = exp2(scale * s_out_main[i_j_idx] - row_lse);
                 });
             });
-            const auto p_out_gemm_main = cast_tile<GemmDataType>(p_out_main);
+            if constexpr(FmhaDropout::IsDropout)
+            {
+                dropout.template Run<decltype(gemm_0), RandValOutputDataType>(
+                    seqlen_q_step, k_origin.at(number<0>{}), p_out_main, randval_dram_window);
+            }
+            const auto p_out_gemm_main = [&]() {
+                if constexpr(FmhaDropout::IsDropout)
+                {
+                    return tile_elementwise_in(
+                        [](const auto& x) { return type_convert<GemmDataType>(x > 0.f ? x : 0.f); },
+                        p_out_main);
+                }
+                else
+                {
+                    return cast_tile<GemmDataType>(p_out_main);
+                }
+            }();
 
             if(debug_dump_mode == 1)
             {

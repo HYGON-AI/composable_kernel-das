@@ -471,7 +471,7 @@ struct FmhaBwdDQDKDVKernel
                                    scale);
             }
 
-            if constexpr(kIsStoreRandval)
+            if constexpr(kIsStoreRandval || kHasDropout)
             {
                 kargs.rand_val_ptr         = rand_val_ptr;
                 kargs.stride_randval       = stride_randval;
@@ -625,7 +625,8 @@ struct FmhaBwdDQDKDVKernel
                                    scale);
             }
 
-            if constexpr(kIsStoreRandval)
+            // [HCU移植] 同上：group 模式 kargs 无 batch_stride_randval。
+            if constexpr(kIsStoreRandval || kHasDropout)
             {
                 kargs.rand_val_ptr         = rand_val_ptr;
                 kargs.stride_randval       = stride_randval;
@@ -723,7 +724,7 @@ struct FmhaBwdDQDKDVKernel
             {
                 batch_offset_dbias = key_start;
             }
-            if constexpr(kIsStoreRandval)
+            if constexpr(kIsStoreRandval || kHasDropout)
             {
                 batch_offset_randval = query_start * kargs.stride_randval;
             }
@@ -768,7 +769,7 @@ struct FmhaBwdDQDKDVKernel
             {
                 batch_offset_dbias = static_cast<long_index_t>(i_batch) * kargs.batch_stride_dbias;
             }
-            if constexpr(kIsStoreRandval)
+            if constexpr(kIsStoreRandval || kHasDropout)
             {
                 batch_offset_randval =
                     static_cast<long_index_t>(i_batch) * kargs.batch_stride_randval;
@@ -1092,10 +1093,11 @@ struct FmhaBwdDQDKDVKernel
         auto randval_dram_window = [&]() {
             constexpr auto randval_dram_window_lengths =
                 make_tuple(number<FmhaPipeline::kM0>{}, number<FmhaPipeline::kN0>{});
-            if constexpr(kIsStoreRandval)
+            if constexpr(kIsStoreRandval || kHasDropout)
             {
-                RandValOutputDataType* rand_val_ptr =
-                    reinterpret_cast<RandValOutputDataType*>(kargs.rand_val_ptr) +
+                static_assert(sizeof(RandValOutputDataType) == 1,
+                              "randval DRAM view is accessed as a 1-byte (int8) dtype");
+                int8_t* rand_val_ptr = reinterpret_cast<int8_t*>(kargs.rand_val_ptr) +
                     static_cast<long_index_t>(i_nhead_) * kargs.nhead_stride_randval +
                     batch_offset_randval;
 
