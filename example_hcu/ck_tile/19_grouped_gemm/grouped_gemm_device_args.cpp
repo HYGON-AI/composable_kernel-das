@@ -36,6 +36,8 @@ ck_tile_hcu_grouped_gemm_bw_family_bf16_tn_blas_transposed_logical_k_tail_device
 
 extern "C" int ck_tile_hcu_grouped_gemm_registry_fp16_device_args(
     std::uint32_t, std::uint32_t, void*, int, std::uint32_t, hipStream_t);
+extern "C" int ck_tile_hcu_grouped_gemm_registry_fp16_tn_common_k_device_args(
+    std::int64_t, void*, int, std::uint32_t, hipStream_t);
 extern "C" int ck_tile_hcu_grouped_gemm_registry_bf16_device_args(
     std::uint32_t, std::uint32_t, void*, int, std::uint32_t, hipStream_t);
 
@@ -386,6 +388,16 @@ int dispatch_registry_candidate(const ck_tile::GroupedGemmProblem& problem,
     const int groups  = problem.group_count;
     const auto dtype  = problem.data_type;
     const auto layout = problem.layout;
+
+    if(instance_id == ck_tile::GroupedGemmInstanceId::v4_64_nonpadding &&
+       dtype == ck_tile::GroupedGemmDataType::fp16 && layout == ck_tile::GroupedGemmLayout::tn &&
+       problem.k.kind == ck_tile::GroupedGemmDimensionKind::common &&
+       (problem.arch == ck_tile::GroupedGemmArch::gfx936 ||
+        problem.arch == ck_tile::GroupedGemmArch::gfx938))
+    {
+        return ck_tile_hcu_grouped_gemm_registry_fp16_tn_common_k_device_args(
+            problem.k.extent, device_args, groups, launch.num_cu, stream);
+    }
 
     switch(instance_id)
     {

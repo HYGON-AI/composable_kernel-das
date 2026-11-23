@@ -301,6 +301,27 @@ int grouped_gemm_example_run_fp16(std::string a_layout, std::string b_layout, in
 #if defined(CK_TILE_GROUPED_GEMM_DEVICE_ARGS_REGISTRY)
 #include "grouped_gemm_device_args_provider.hpp"
 
+namespace {
+struct Fp16TnMultiKTileTraits
+{
+    template <typename Problem>
+    using GemmPipeline =
+        ck_tile::GemmPipelineAgBgCrCompV4<Problem, ck_tile::GemmPipelineAgBgCrCompV4MultiKTilePolicy>;
+};
+} // namespace
+
+extern "C" int ck_tile_hcu_grouped_gemm_registry_fp16_tn_common_k_device_args(
+    std::int64_t k, void* device_args, int group_count, std::uint32_t num_cu, hipStream_t stream)
+{
+    using namespace grouped_gemm_device_args_detail;
+    using Half = ck_tile::half_t;
+    using Config = GemmConfigComputeV4<Half>;
+    if(k > Config::K_Tile)
+        return launch_one<Config, Half, Col, Row, ck_tile::GroupedGemmMFilter::All, 0,
+                          Fp16TnMultiKTileTraits>(device_args, group_count, num_cu, stream);
+    return launch_one<Config, Half, Col, Row>(device_args, group_count, num_cu, stream);
+}
+
 extern "C" int ck_tile_hcu_grouped_gemm_registry_fp16_device_args(
     std::uint32_t instance_id,
     std::uint32_t layout,

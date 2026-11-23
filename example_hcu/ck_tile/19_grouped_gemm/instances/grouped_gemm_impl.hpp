@@ -924,7 +924,8 @@ template <typename GemmConfig,
           typename CDataType,
           int UniqueKernelTag,
           ck_tile::GroupedGemmMFilter MFilter,
-          ck_tile::index_t MFilterAlign>
+          ck_tile::index_t MFilterAlign,
+          typename PipelineTraits>
 float grouped_gemm_tileloop(const ck_tile::stream_config& s,
                             const ck_tile::index_t num_groups,
                             void* kargs_ptr,
@@ -982,8 +983,7 @@ float grouped_gemm_tileloop(const ck_tile::stream_config& s,
                                                                            padding_vector_size,
                                                                            padding_vector_size>;
 
-        using GemmPipeline = typename PipelineTypeTraits<
-            GemmConfig::Pipeline>::template GemmPipeline<UniversalGemmProblem>;
+        using GemmPipeline = typename PipelineTraits::template GemmPipeline<UniversalGemmProblem>;
 #if defined(CK_TILE_GROUPED_GEMM_DSREADM_OUTPUT_TILE_DIRECT_STORE)
         using GroupedGemmRegularEpilogue =
             GroupedGemmOutputTileDirectStoreEpilogue<GemmPipeline,

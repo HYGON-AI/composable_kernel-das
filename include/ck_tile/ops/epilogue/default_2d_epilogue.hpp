@@ -6,6 +6,7 @@
 
 #include "ck_tile/core.hpp"
 #include "ck_tile/ops/common/tensor_layout.hpp"
+#include "ck_tile/ops/elementwise/unary_element_wise_operation.hpp"
 
 namespace ck_tile {
 
@@ -27,6 +28,7 @@ struct Default2DEpilogueProblem
     static constexpr memory_operation_enum MemoryOperation = MemoryOperation_;
 };
 
+namespace legacy {
 template <typename ADataType_,
           typename BDataType_,
           typename AccDataType_,
@@ -54,6 +56,45 @@ struct DefaultGemm2DEpilogueProblem : public Default2DEpilogueProblem<AccDataTyp
     static constexpr index_t kNPerXdl      = kNPerXdl_;
     static constexpr index_t kKPerXdl      = kKPerXdl_;
     static constexpr index_t isCTransposed = isCTransposed_;
+};
+} // namespace legacy
+
+template <typename ADataType_,
+          typename BDataType_,
+          typename DsDataType_,
+          typename AccDataType_,
+          typename ODataType_,
+          typename DsLayout_,
+          typename CLayout_,
+          typename CDElementwise_,
+          index_t MPerBlock_,
+          index_t NPerBlock_,
+          bool PadM_,
+          bool PadN_,
+          index_t MPerWarp_,
+          index_t NPerWarp_,
+          index_t KPerWarp_,
+          bool TransposeC_,
+          bool UseRawStore_ = true>
+struct DefaultGemm2DEpilogueProblem
+    : legacy::DefaultGemm2DEpilogueProblem<ADataType_,
+                                           BDataType_,
+                                           AccDataType_,
+                                           ODataType_,
+                                           CLayout_,
+                                           PadM_,
+                                           PadN_,
+                                           MPerWarp_,
+                                           NPerWarp_,
+                                           KPerWarp_,
+                                           TransposeC_,
+                                           UseRawStore_>
+{
+    using DsDataType = DsDataType_;
+    using DsLayout = DsLayout_;
+    using CDElementwise = CDElementwise_;
+    static constexpr index_t kMPerBlock = MPerBlock_;
+    static constexpr index_t kNPerBlock = NPerBlock_;
 };
 
 template <typename Problem_, typename Policy_ = void>
@@ -100,6 +141,33 @@ struct Default2DEpilogue
                 update_tile(o_dram_window_tmp, cast_tile<ODataType>(o_acc_tile));
             }
         }
+    }
+};
+
+template <typename Problem, typename Policy = void>
+struct DefaultGemm2DEpilogue : Default2DEpilogue<Problem, Policy>
+{
+    using Base = Default2DEpilogue<Problem, Policy>;
+    using DsDataType = typename Problem::DsDataType;
+    using DsLayout = typename Problem::DsLayout;
+    static constexpr bool kUsesLogicalAccumulatorLayout = true;
+
+    static_assert(DsDataType::size() == 0 && DsLayout::size() == 0);
+    static_assert(std::is_same_v<typename Problem::CLayout, tensor_layout::gemm::RowMajor>);
+    static_assert(std::is_same_v<typename Problem::CDElementwise, element_wise::PassThrough>);
+
+    CK_TILE_HOST_DEVICE static constexpr index_t GetVectorSizeC() { return 1; }
+
+    template <index_t I>
+    CK_TILE_HOST_DEVICE static constexpr index_t GetVectorSizeD(number<I>) { return 1; }
+
+    template <typename OutputWindow, typename AccTile, typename DsWindows>
+    CK_TILE_DEVICE void operator()(OutputWindow& output,
+                                   const AccTile& acc,
+                                   const DsWindows&,
+                                   void* lds) const
+    {
+        Base{}(output, acc, lds);
     }
 };
 } // namespace ck_tile
