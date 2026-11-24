@@ -78,6 +78,8 @@ struct WarpGemmAttributeMmacIterateK
                                     // NmmacInterleave, N1PerLane>
         sequence<0, 0, 2, 3, 1, 3>>;
 
+    using CWarpPermuteDstrEncoding = CWarpOutputDstrEncoding;
+
     // c_vec += a_vec * b_vec
     CK_TILE_DEVICE void
     operator()(CBufType& c_buf, const ABufType& a_buf, const BBufType& b_buf) const
@@ -158,6 +160,17 @@ struct WarpGemmAttributeMmacIterateK
         });
 
         return c_warp_output_tensor;
+    }
+
+    template <typename CWarpTensor>
+    CK_TILE_DEVICE static auto GetCWarpPermuteTensor(const CWarpTensor& c_warp_tensor)
+    {
+        static_assert(NInterleave == 1);
+        auto output =
+            make_static_distributed_tensor<CDataType>(make_static_tile_distribution(
+                CWarpPermuteDstrEncoding{}));
+        output.get_thread_buffer() = c_warp_tensor.get_thread_buffer();
+        return output;
     }
 };
 

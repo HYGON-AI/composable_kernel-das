@@ -8,6 +8,7 @@
 #include "ck_tile/core.hpp"
 #include "ck_tile/ops/gemm/pipeline/gemm_pipeline_ag_bg_cr_scheduler.hpp"
 #include "ck_tile/ops/gemm/pipeline/gemm_pipeline_ag_bg_cr_base.hpp"
+#include "ck_tile/ops/gemm/pipeline/tile_gemm_traits.hpp"
 #include "ck_tile/ops/gemm/pipeline/gemm_pipeline_ag_bg_cr_comp_v4_default_policy.hpp"
 
 namespace ck_tile {
@@ -26,8 +27,9 @@ struct BaseGemmPipelineAgBgCrCompV4
 
     CK_TILE_HOST_DEVICE static constexpr bool BlockHasHotloop(index_t num_loop)
     {
-        if constexpr (Problem::DoubleSmemBuffer)
-            return num_loop > PrefetchStages + 1;   //ping pong buffer need at least 2 extra tile to loop.
+        if constexpr(Problem::DoubleSmemBuffer ||
+                     detail::is_basic_gemm_traits<typename Problem::Traits>)
+            return num_loop > PrefetchStages + 1;
         else
             return num_loop > PrefetchStages;
     }
@@ -85,6 +87,11 @@ struct BaseGemmPipelineAgBgCrCompV4
     }
 };
 
+// Select only when every K loop is known to contain at least two tiles.
+struct GemmPipelineAgBgCrCompV4MultiKTilePolicy : GemmPipelineAgBgCrCompV4DefaultPolicy
+{
+};
+
 /**
  * @brief Compute optimized pipeline version 4
  *
@@ -102,6 +109,8 @@ template <typename Problem, typename Policy = GemmPipelineAgBgCrCompV4DefaultPol
 struct GemmPipelineAgBgCrCompV4 : public BaseGemmPipelineAgBgCrCompV4<Problem>
 {
     using Base             = BaseGemmPipelineAgBgCrCompV4<Problem>;
+    static constexpr bool MayHaveSingleKTile =
+        !std::is_base_of_v<GemmPipelineAgBgCrCompV4MultiKTilePolicy, Policy>;
     using PipelineImplBase = GemmPipelineAgBgCrImplBase<Problem, Policy>;
 
     using ADataType      = remove_cvref_t<typename Problem::ADataType>;
@@ -341,14 +350,14 @@ struct GemmPipelineAgBgCrCompV4 : public BaseGemmPipelineAgBgCrCompV4<Problem>
             // A DRAM tile window for load
             auto a_copy_dram_window =
                 make_tile_window(a_dram_block_window_tmp.get_bottom_tensor_view(),
-                                 make_tuple(number<MPerBlock>{}, number<KPerBlock>{}),
+                                 a_dram_block_window_tmp.get_window_lengths(),
                                  a_dram_block_window_tmp.get_window_origin(),
                                  Policy::template MakeADramTileDistribution<Problem>());
 
             // B DRAM tile window for load
             auto b_copy_dram_window =
                 make_tile_window(b_dram_block_window_tmp.get_bottom_tensor_view(),
-                                 make_tuple(number<NPerBlock>{}, number<KPerBlock>{}),
+                                 b_dram_block_window_tmp.get_window_lengths(),
                                  b_dram_block_window_tmp.get_window_origin(),
                                  Policy::template MakeBDramTileDistribution<Problem>());
 
@@ -376,8 +385,7 @@ struct GemmPipelineAgBgCrCompV4 : public BaseGemmPipelineAgBgCrCompV4<Problem>
             };
 
             const auto local_prefill_b = [&](auto& b_lds_window) {
-                if constexpr(Problem::Traits::SupportBRowMajor && is_b_row_major &&
-                             !is_b_load_tr_v())
+                if constexpr(is_b_row_major && !is_b_load_tr_v())
                 {
                     auto b_shuffle_tmp = make_static_distributed_tensor<BDataType>(
                         Policy::template MakeShuffledBRegTileDistribution<Problem>());
@@ -441,8 +449,11 @@ struct GemmPipelineAgBgCrCompV4 : public BaseGemmPipelineAgBgCrCompV4<Problem>
             local_prefill_b(b_copy_lds_window0);
 
             // global read 1
-            Base::GlobalPrefetch(a_global_load_tile, a_copy_dram_window, a_dram_tile_window_step);
-            Base::GlobalPrefetch(b_global_load_tile, b_copy_dram_window, b_dram_tile_window_step);
+            if(!MayHaveSingleKTile || num_loop > 1)
+            {
+                Base::GlobalPrefetch(a_global_load_tile, a_copy_dram_window, a_dram_tile_window_step);
+                Base::GlobalPrefetch(b_global_load_tile, b_copy_dram_window, b_dram_tile_window_step);
+            }
 
             block_sync_lds();
 
@@ -475,6 +486,15 @@ struct GemmPipelineAgBgCrCompV4 : public BaseGemmPipelineAgBgCrCompV4<Problem>
 
             Base::LocalPrefetch(a_block_tile0, a_lds_ld_window0, is_a_load_tr_v);
             Base::LocalPrefetch(b_block_tile0, b_lds_ld_window0, is_b_load_tr_v);
+
+            if constexpr(MayHaveSingleKTile)
+            {
+                if(num_loop == 1)
+                {
+                    block_gemm(c_block_tile, a_block_tile0, b_block_tile0);
+                    return c_block_tile;
+                }
+            }
 
             local_prefill_a(a_copy_lds_window1);
             local_prefill_b(b_copy_lds_window1);

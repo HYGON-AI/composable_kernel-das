@@ -30,10 +30,22 @@ struct TileGemmTraits
 
     static constexpr bool TransposeC            = false;
     static constexpr bool UseStructuredSparsity = false;
+    static constexpr bool DoubleSmemBuffer     = false;
+    static constexpr bool UsePersistentKernel  = false;
+    static constexpr bool UseABScale           = false;
     static constexpr index_t NumWaveGroups      = NumWaveGroups_;
     static constexpr bool SupportBRowMajor      = false;
     static constexpr bool SupportAColumnMajor   = false;
 };
+
+namespace detail {
+template <typename Traits>
+inline constexpr bool is_basic_gemm_traits = false;
+
+template <bool PadM, bool PadN, bool PadK, typename A, typename B, typename C, index_t Waves>
+inline constexpr bool is_basic_gemm_traits<TileGemmTraits<PadM, PadN, PadK, A, B, C, Waves>> =
+    true;
+} // namespace detail
 
 //Note: Here won't use mmacrepeat anymore cause that dimension make layout more complex.
 //We want to make each wave compute logical continuous Tile.

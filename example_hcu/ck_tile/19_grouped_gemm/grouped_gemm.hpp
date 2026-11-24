@@ -2696,7 +2696,8 @@ template <typename GemmConfig,
           typename CDataType,
           int UniqueKernelTag = 0,
           ck_tile::GroupedGemmMFilter MFilter = ck_tile::GroupedGemmMFilter::All,
-          ck_tile::index_t MFilterAlign       = 0>
+          ck_tile::index_t MFilterAlign = 0,
+          typename PipelineTraits = PipelineTypeTraits<GemmConfig::Pipeline>>
 float grouped_gemm_tileloop(const ck_tile::stream_config& s,
                             const ck_tile::index_t num_groups,
                             void* kargs_ptr,

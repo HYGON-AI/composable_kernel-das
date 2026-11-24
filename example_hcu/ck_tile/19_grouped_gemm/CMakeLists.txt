@@ -669,6 +669,24 @@ add_test(NAME tile_example_grouped_gemm_device_args_benchmark_ragged_k_smoke
 set_tests_properties(tile_example_grouped_gemm_device_args_benchmark_ragged_k_smoke
     PROPERTIES LABELS "hcu;ck_tile;grouped_gemm;device_args;ragged;example;smoke")
 
+foreach(k IN ITEMS 64 128 192 384 448)
+    add_test(NAME tile_example_grouped_gemm_device_args_fp16_tn_k${k}
+        COMMAND $<TARGET_FILE:tile_example_grouped_gemm_device_args_benchmark>
+                --m=128 --n=256 --k=${k} --groups=8
+                --dtype=fp16 --layout=TN --backend=ck --time=0 --correctness-repeats=1)
+    set_tests_properties(tile_example_grouped_gemm_device_args_fp16_tn_k${k}
+        PROPERTIES LABELS "hcu;ck_tile;grouped_gemm;device_args;example;smoke")
+endforeach()
+
+add_test(NAME tile_example_grouped_gemm_device_args_fp16_tn_mixed_k
+    COMMAND $<TARGET_FILE:tile_example_grouped_gemm_device_args_benchmark>
+            --m=128 --n=256 --k=384 --groups=8
+            --group-lengths=64,128,192,384,320,256,0,64 --variable-capacity=3072
+            --allow-empty-groups=1 --dtype=fp16 --layout=TN --backend=ck
+            --time=0 --correctness-repeats=1)
+set_tests_properties(tile_example_grouped_gemm_device_args_fp16_tn_mixed_k
+    PROPERTIES LABELS "hcu;ck_tile;grouped_gemm;device_args;ragged;example;smoke")
+
 set(GROUPED_GEMM_FAST_FIXED_SHAPE_ARGS
     -group_count=2
     -Ms=128,256

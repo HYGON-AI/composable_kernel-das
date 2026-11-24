@@ -996,7 +996,7 @@ struct UniversalGemmKernel
             // Run Epilogue Pipeline
             auto& c_block_window = gemm_tile_windows.at(I3);
 
-            EpiloguePipeline{}(c_block_window, c_block_tile, ds_block_window, smem_ptr_0);
+            StoreOutput(c_block_window, c_block_tile, ds_block_window, smem_ptr_0);
         }
     }
 
@@ -1050,7 +1050,25 @@ struct UniversalGemmKernel
         // Run Epilogue Pipeline
         auto& c_block_window = gemm_tile_windows.at(I3);
 
-        EpiloguePipeline{}(c_block_window, c_block_tile, ds_block_window, smem_ptr_0);
+        StoreOutput(c_block_window, c_block_tile, ds_block_window, smem_ptr_0);
+    }
+
+    template <typename T>
+    using logical_accumulator_layout = decltype(T::kUsesLogicalAccumulatorLayout);
+
+    template <typename OutputWindow, typename AccTile, typename DsWindows>
+    CK_TILE_DEVICE static void StoreOutput(OutputWindow& output,
+                                           const AccTile& acc,
+                                           const DsWindows& ds_windows,
+                                           void* lds)
+    {
+        if constexpr(is_detected<logical_accumulator_layout, EpiloguePipeline>::value)
+        {
+            using BlockGemm = typename GemmPipeline::BlockGemm;
+            EpiloguePipeline{}(output, BlockGemm::MakeCOutputBlockTile(acc), ds_windows, lds);
+        }
+        else
+            EpiloguePipeline{}(output, acc, ds_windows, lds);
     }
 
     // Non-persistent kernel entry point
