@@ -642,20 +642,6 @@ struct BlockFmhaBwdDQDKDVPipelineKRKTRVR
                 });
             }
 
-            if constexpr(kPadSeqLenK || FmhaMask::IsMasking)
-            {
-                bool need_perpixel_check = mask.IsEdgeTile(
-                    seqlen_q_step, k_origin.at(number<0>{}), number<kM0>{}, number<kN0>{});
-                if(need_perpixel_check)
-                {
-                    set_tile_if(s_acc, -numeric<AccDataType>::infinity(), [&](auto tile_idx) {
-                        const auto row = seqlen_q_step + tile_idx.at(number<0>{});
-                        const auto col = k_origin.at(number<0>{}) + tile_idx.at(number<1>{});
-                        return mask.IsOutOfBound(row, col);
-                    });
-                }
-            }
-
             if(debug_dump_mode == 3)
             {
                 const auto debug_tile = tile_elementwise_in(
@@ -713,7 +699,21 @@ struct BlockFmhaBwdDQDKDVPipelineKRKTRVR
             // 2. LSE 通过 stride-0 2D LDS 视图广播到 s_out_main 分布
             // 3. p_out_main = exp2(scale * s_out_main - log2e * lse_bcast_main)
             // 4. p_out_gemm_main = cast_tile<GemmDataType>(p_out_main)，供后续 G1/dS 使用
-            const auto s_out_main = gemm_0.MakeCOutputBlockTile(s_acc);
+            auto s_out_main = gemm_0.MakeCOutputBlockTile(s_acc);
+            if constexpr(kPadSeqLenK || FmhaMask::IsMasking)
+            {
+                bool need_perpixel_check = mask.IsEdgeTile(
+                    seqlen_q_step, k_origin.at(number<0>{}), number<kM0>{}, number<kN0>{});
+                if(need_perpixel_check)
+                {
+                    set_tile_if(s_out_main, -numeric<AccDataType>::infinity(), [&](auto tile_idx) {
+                        const auto row = seqlen_q_step + tile_idx.at(number<0>{});
+                        const auto col = k_origin.at(number<0>{}) + tile_idx.at(number<1>{});
+                        return mask.IsOutOfBound(row, col);
+                    });
+                }
+            }
+
             auto lse_bcast_lds_main = make_tensor_view<address_space_enum::lds>(
                 lse_lds_ptr,
                 make_naive_tensor_descriptor(make_tuple(number<kM0>{}, number<kN0>{}),
@@ -862,6 +862,21 @@ struct BlockFmhaBwdDQDKDVPipelineKRKTRVR
             }
 
             gemm_1(dv_acc, pt_reg_tensor, dot_reg_tensor);
+            if constexpr(std::is_same_v<GemmDataType, bf16_t>)
+            {
+                // Accumulate the residual discarded when P is rounded to BF16.
+                const auto p_residual = tile_elementwise_in(
+                    [](const auto& full, const auto& rounded) {
+                        return type_convert<GemmDataType>((full > 0.f ? full : 0.f) -
+                                                          type_convert<float>(rounded));
+                    }, p_out_main, p_out_gemm_main);
+                block_sync_lds();
+                store_tile(ds_lds_window, p_residual);
+                block_sync_lds();
+                const auto pt_residual = load_tile(pt_lds_read_window);
+                gemm_1(dv_acc, pt_residual, dot_reg_tensor);
+            }
+
 
             // STAGE 4, OGrad@V Gemm2
             auto do_reg_tensor = load_tile(do_lds_read_window);
@@ -1053,6 +1068,13 @@ struct BlockFmhaBwdDQDKDVPipelineKRKTRVR
                 });
             });
 
+            // Softmax over a single valid key is independent of Q and K.
+            set_tile_if(ds_out, 0.f, [&](auto tile_idx) {
+                const auto row = seqlen_q_step + tile_idx.at(number<0>{});
+                const auto range = mask.GetTileRangeAlongX(row, number<1>{}, number<1>{});
+                return range.at(number<1>{}) - range.at(number<0>{}) <= 1;
+            });
+
             if constexpr(kHasBiasGrad)
             {
                 const auto dbias = [&]() {
@@ -1143,6 +1165,28 @@ struct BlockFmhaBwdDQDKDVPipelineKRKTRVR
                 }
             });
             move_tile_window(ds_lds_read_window, {0, -kN0});
+            if constexpr(FmhaDropout::IsDropout && std::is_same_v<GemmDataType, bf16_t>)
+            {
+                // Accumulate the residual discarded when dS is rounded to BF16.
+                const auto ds_residual = tile_elementwise_in(
+                    [](const auto& full, const auto& rounded) {
+                        return type_convert<GemmDataType>(full - type_convert<float>(rounded));
+                    }, ds_out, ds_gemm);
+                block_sync_lds();
+                store_tile(ds_lds_window, ds_residual);
+                block_sync_lds();
+                const auto dst_residual = load_tile(dst_lds_read_window);
+                gemm_3(dk_acc, dst_residual, qt_reg_tensor);
+                static_for<0, k4_loops, 1>{}([&](auto i_k4) {
+                    const auto ds_residual_slice = load_tile(ds_lds_read_window);
+                    move_tile_window(ds_lds_read_window, {0, kK4});
+                    const auto kt_residual_slice = get_slice_tile(
+                        kt_reg_tensor, sequence<0, i_k4 * kK4>{},
+                        sequence<kQKHeaddim, (i_k4 + 1) * kK4>{});
+                    gemm_4(dq_acc, ds_residual_slice, kt_residual_slice);
+                });
+                move_tile_window(ds_lds_read_window, {0, -kN0});
+            }
             // QGrad Scale
             if constexpr(FmhaDropout::IsDropout)
             {

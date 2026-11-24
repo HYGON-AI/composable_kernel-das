@@ -13,7 +13,10 @@ FWD_DTYPE_MAP = {
     "mxfp4": "FmhaFwdMxFp4",
 }
 
-BWD_DTYPE_MAP = {"fp32": "FmhaBwdFp32", "fp16": "FmhaBwdFp16", "bf16": "FmhaBwdBf16"}
+BWD_DTYPE_MAP = {
+    "fp32": "FmhaBwdFp32", "fp16": "FmhaBwdFp16", "bf16": "FmhaBwdBf16",
+    "bf16_fp32kv": "FmhaBwdBf16Fp32KV",
+}
 
 MASK_IMPL = {
     "generic": "ck_tile::GenericAttentionMask",
@@ -113,6 +116,8 @@ DROPOUT_MAP = {
     "dropout_wg16_storerandval": "ck_tile::BlockDropoutBwd<true,  false, true >",
     "dropout_ld": "ck_tile::BlockDropoutBwdLoadRandval<false>",
     "dropout_ld_storerandval": "ck_tile::BlockDropoutBwdLoadRandval<true>",
+    "dropout_rp": "ck_tile::BlockDropoutBwdReplayHcu<false>",
+    "dropout_rp_storerandval": "ck_tile::BlockDropoutBwdReplayHcu<true>",
 }
 
 DROPOUT_CHECK_MAP = {
@@ -123,6 +128,8 @@ DROPOUT_CHECK_MAP = {
     "dropout_wg16_storerandval": "t.has_dropout == true && t.is_store_randval == true",
     "dropout_ld": "t.has_dropout == true && t.is_store_randval == false",
     "dropout_ld_storerandval": "t.has_dropout == true && t.is_store_randval == true",
+    "dropout_rp": "t.has_dropout == true && t.is_store_randval == false",
+    "dropout_rp_storerandval": "t.has_dropout == true && t.is_store_randval == true",
 }
 
 ROPE_MAP = {

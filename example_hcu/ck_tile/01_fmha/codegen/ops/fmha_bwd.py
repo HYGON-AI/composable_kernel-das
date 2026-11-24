@@ -443,6 +443,10 @@ class FmhaBwdDQDKDVKernel:
 
 
 class KernelComponentFactoryBase:
+    @classmethod
+    def get_dropout_types(cls, receipt):
+        return [name for name in DROPOUT_MAP if name == "no" or name.startswith("dropout_wg")]
+
     @staticmethod
     def supports_trait_combo(
         dtype: str,
@@ -457,7 +461,7 @@ class KernelComponentFactoryBase:
         dvpad: int,
         deterministic: str,
     ) -> bool:
-        return dropout == "no"
+        return dropout == "no" or dropout.startswith("dropout_wg")
 
 
 class KernelComponentFactoryGfx9(KernelComponentFactoryBase):
@@ -496,6 +500,12 @@ class KernelComponentFactoryGfx936(KernelComponentFactoryGfx9):
         tag=get_hcu_arch_tag("gfx936"),
     )
 
+    @classmethod
+    def get_dropout_types(cls, receipt):
+        if cls.arch.name in ("gfx936", "gfx938") and receipt != 3:
+            return ["no", "dropout_rp", "dropout_rp_storerandval"]
+        return ["no", "dropout_ld", "dropout_ld_storerandval"]
+
     @staticmethod
     def get_dq_dk_dv_tiles(dtype: str, tr_load: str) -> List[FmhaBwdDQDKDVTileSize]:
         # HCU移植: HCU MMAC 使用 16x16x32 (K=32) 和 16x16x16 (K=16) warp tile。
@@ -505,7 +515,7 @@ class KernelComponentFactoryGfx936(KernelComponentFactoryGfx9):
         # 此处提供 HCU 兼容的 tile 集合。
         if tr_load == "t":
             return []
-        if dtype in ["fp16", "bf16"]:
+        if dtype in ["fp16", "bf16", "bf16_fp32kv"]:
             return [
                 #                     bm0  bn0  bk0  bk1  bk2  bk3  bk4 bhdq bhdv
                 # d64 tile (same as upstream, verified working on gfx938)
@@ -534,20 +544,20 @@ class KernelComponentFactoryGfx936(KernelComponentFactoryGfx9):
     ) -> bool:
         #   在最小 batch/no-pad/no-dropout 闭包基础上放开
         #   - mask: s_no / s_mask（simplified mask，含 causal top-left/bottom-right）
-        #   - dropout: load 型（dropout_ld / dropout_ld_storerandval），掩码来自
-        #     FWD 写出的 randval 缓冲，kernel 不重生成 philox
+        #   - dropout: receipt 3 从 FWD randval 缓冲读取，集成 receipt 重放 seed/offset。
         #   - spad1d: f / t，t 覆盖 seqlen_q % 64 != 0（dot_do_o/convert_dq 1D kernel）
         #   - dpad/dvpad: (0,0)/(8,8)/(1,1)，与 FWD 一致覆盖 head_dim <= 128
         #     （8: %8 对齐快速档；1: 任意 head_dim）
         # 仍保持：batch 模式、无 bias/dbias、非确定性、tr_load=f。
         return (
-            dtype in ["fp16", "bf16"]
+            dtype in ["fp16", "bf16", "bf16_fp32kv"]
             and tr_load == "f"
             and mode == "batch"
             and mask in ["s_no", "s_mask"]
             and bias == "no"
             and dbias == "f"
-            and dropout in ["no", "dropout_ld", "dropout_ld_storerandval"]
+            and dropout in ["no", "dropout_ld", "dropout_ld_storerandval",
+                            "dropout_rp", "dropout_rp_storerandval"]
             and dpad == dvpad
             and dpad in [0, 8, 1]
             and deterministic == "f"
@@ -1179,6 +1189,10 @@ def get_bwd_blobs(
     for factory, dtype, tr_load in itertools.product(
         factories, BWD_DTYPE_MAP.keys(), ["t", "f"]
     ):
+        if dtype == "bf16_fp32kv" and (
+            receipt != 4 or factory.arch.name not in ("gfx936", "gfx938")
+        ):
+            continue
         tiles: Any = factory.get_dq_dk_dv_tiles(dtype, tr_load)
         spad1d_options = ["f", "t"]
         dpad_options = itertools.product(*([[0, 8, 1]] * 2))
@@ -1192,7 +1206,7 @@ def get_bwd_blobs(
             get_mask_map(mask_impl).keys(),
             BIAS_MAP.keys(),
             tf,
-            DROPOUT_MAP.keys(),
+            factory.get_dropout_types(receipt),
             spad1d_options,
             dpad_options,
             tf,
@@ -1266,7 +1280,7 @@ def get_bwd_blobs(
             if receipt == 2:
                 cond = dtype in ["fp16", "bf16"]
                 cond &= bias in ["no", "alibi"]
-                cond &= dropout in ["no", "dropout_wg32", "dropout_wg16"]
+                cond &= dropout in ["no", "dropout_wg32", "dropout_wg16", "dropout_rp"]
                 cond &= dpad == dvpad
                 if not cond:
                     continue
@@ -1279,9 +1293,9 @@ def get_bwd_blobs(
                     continue
             # PyTorch integration
             elif receipt == 4:
-                cond = dtype in ["fp16", "bf16"]
+                cond = dtype in ["fp16", "bf16", "bf16_fp32kv"]
                 cond &= bias in ["no", "bias"]
-                cond &= dropout in ["no", "dropout_wg32", "dropout_wg16"]
+                cond &= dropout in ["no", "dropout_wg32", "dropout_wg16", "dropout_rp"]
                 cond &= dpad == dvpad
                 cond &= deterministic == "f"
                 if not cond:
@@ -1290,14 +1304,14 @@ def get_bwd_blobs(
             elif receipt == 300:
                 cond = dtype in ["fp16", "bf16"]
                 cond &= mode == "batch"
-                cond &= dropout in ["no", "dropout_wg32", "dropout_wg16"]
+                cond &= dropout in ["no", "dropout_wg32", "dropout_wg16", "dropout_rp"]
                 if not cond:
                     continue
             # Aiter (mha_varlen_bwd) integration
             elif receipt == 400:
                 cond = dtype in ["fp16", "bf16"]
                 cond &= mode == "group"
-                cond &= dropout in ["no", "dropout_wg32", "dropout_wg16"]
+                cond &= dropout in ["no", "dropout_wg32", "dropout_wg16", "dropout_rp"]
                 if not cond:
                     continue
             # aiter::mha_bwd C++ api integration
@@ -1308,7 +1322,7 @@ def get_bwd_blobs(
             # TransformerEngine integration
             elif receipt == 700:
                 cond = dtype in ["fp16", "bf16"]
-                cond &= dropout in ["no", "dropout_wg32", "dropout_wg16"]
+                cond &= dropout in ["no", "dropout_wg32", "dropout_wg16", "dropout_rp"]
                 if not cond:
                     continue
 

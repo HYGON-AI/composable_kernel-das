@@ -75,9 +75,63 @@ class HcuCodegenTest(unittest.TestCase):
             # load 型 dropout 分派（含 storerandval 校验档）
             self.assertIn('ck_tile::BlockDropoutBwdLoadRandval<false>', api)
             self.assertIn('ck_tile::BlockDropoutBwdLoadRandval<true>', api)
-            # 非 HCU factory 不再生成 dropout 实例（pipeline 已移除 philox 重生成路径）
-            _, _, up_kernels, _ = fmha_bwd.get_bwd_blobs(['gfx950'], '', 3, 'simplified', [64, 128])
-            self.assertEqual({k.F_dropout for k in up_kernels}, {'no'})
+
+    def test_integration_receipts_replay_without_load_candidates(self):
+        torch_filter = '*psdv*@*psd*@*_pd1dv1*_ntrload*'
+        for target in ('gfx936', 'gfx938'):
+            for receipt in (2, 4, 300, 600, 700):
+                with self.subTest(target=target, receipt=receipt):
+                    pool, _, kernels, _ = fmha_bwd.get_bwd_blobs(
+                        [target], torch_filter if receipt == 4 else '',
+                        receipt, 'simplified', [64, 128])
+                    expected_dtypes = {'fp16', 'bf16'}
+                    if receipt == 4:
+                        expected_dtypes.add('bf16_fp32kv')
+                    self.assertEqual({k.F_dtype for k in kernels}, expected_dtypes)
+                    self.assertEqual({k.F_hdim for k in kernels}, {64, 128})
+                    policies = {k.F_dropout for k in kernels}
+                    self.assertTrue({'no', 'dropout_rp'} <= policies)
+                    self.assertFalse(any(name.startswith('dropout_ld') for name in policies))
+                    self.assertIn('ck_tile::BlockDropoutBwdReplayHcu<false>', pool.api)
+                    if receipt == 600:
+                        self.assertIn('dropout_rp_storerandval', policies)
+            _, _, group, _ = fmha_bwd.get_bwd_blobs(
+                [target], '', 400, 'simplified', [64, 128])
+            self.assertFalse(group)
+
+    def test_generic_architectures_retain_replay_policies(self):
+        for target in ('gfx942', 'gfx950', 'gfx1100', 'gfx1201', 'gfx1250'):
+            with self.subTest(target=target):
+                pool, _, kernels, _ = fmha_bwd.get_bwd_blobs(
+                    [target], '', 4, 'simplified', [64, 128])
+                self.assertEqual({k.F_dropout for k in kernels}, {'no', 'dropout_wg16'})
+                self.assertNotIn('BlockDropoutBwdLoadRandval', pool.api)
+                self.assertNotIn('BlockDropoutBwdReplayHcu', pool.api)
+
+    def test_fp32_kv_gradients_are_an_explicit_hcu_torch_variant(self):
+        for target in ('gfx936', 'gfx938', 'gfx946', 'gfx942', 'gfx1100'):
+            for receipt in (3, 4, 600):
+                with self.subTest(target=target, receipt=receipt):
+                    pool, _, kernels, _ = fmha_bwd.get_bwd_blobs(
+                        [target], '*psdv*@*psd*@*_pd1dv1*_ntrload*',
+                        receipt, 'simplified', [64, 128])
+                    variants = [k for k in kernels if k.F_dtype == 'bf16_fp32kv']
+                    expected = receipt == 4 and target in ('gfx936', 'gfx938')
+                    self.assertEqual(bool(variants), expected)
+                    if expected:
+                        self.assertEqual(len(variants), 8)
+                        self.assertIn('t.data_type.compare("bf16_fp32kv") == 0', pool.api)
+                        self.assertTrue(all('FmhaBwdBf16Fp32KV' in k.template for k in variants))
+                        self.assertTrue(any(k.F_dtype == 'bf16' for k in kernels))
+
+    def test_gfx946_does_not_inherit_unverified_replay_mapping(self):
+        _, _, kernels, _ = fmha_bwd.get_bwd_blobs(
+            ['gfx946'], '', 3, 'simplified', [64, 128])
+        self.assertEqual({k.F_dropout for k in kernels},
+                         {'no', 'dropout_ld', 'dropout_ld_storerandval'})
+        _, _, kernels, _ = fmha_bwd.get_bwd_blobs(
+            ['gfx946'], '', 4, 'simplified', [64, 128])
+        self.assertEqual({k.F_dropout for k in kernels}, {'no'})
 
     def test_hcu_fwd_skpad_and_dropout_pipelines(self):
         # FWD 支持任意 seqlen_k（skpad 档）与非零 dropout（逻辑 philox）。

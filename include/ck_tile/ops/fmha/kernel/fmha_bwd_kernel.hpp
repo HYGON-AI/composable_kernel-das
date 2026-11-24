@@ -64,6 +64,7 @@ struct FmhaBwdDQDKDVKernel
     using FmhaDropout                 = ck_tile::remove_cvref_t<typename FmhaPipeline::FmhaDropout>;
     static constexpr bool kHasMask    = FmhaMask::IsMasking;
     static constexpr bool kHasDropout = FmhaDropout::IsDropout;
+    static constexpr bool kIsLoadRandval = FmhaDropout::IsLoadRandval;
     static constexpr bool kIsStoreRandval  = FmhaDropout::IsStoreRandval;
     static constexpr bool kIsDeterministic = FmhaPipeline::kIsDeterministic;
 
@@ -94,6 +95,8 @@ struct FmhaBwdDQDKDVKernel
             return n.empty() ? n : std::string("p") + n; }();
         return
             _SS_("fmha_bwd_d") + _TS_(bfs::kQKHeaddim) + "_" + _SS_(t2s<QDataType>::name) +
+            (std::is_same_v<KGradDataType, float> && std::is_same_v<QDataType, bf16_t> ? "_fp32kv" : "") +
+            (std::is_same_v<KGradDataType, float> && std::is_same_v<QDataType, bf16_t> ? "_fp32kv" : "") +
             "_" + (kIsGroupMode ? "group" : "batch") + "_" +
             "b" + _TS_(bfs::kM0) + "x" + _TS_(bfs::kN0) + "x" + _TS_(bfs::kK0) + "x" + _TS_(bfs::kK1) + "x" + _TS_(bfs::kK2) + "x" + _TS_(bfs::kK3) + "x" +
                     _TS_(bfs::kK4) + "x" + _TS_(bfs::kQKHeaddim) + "x" + _TS_(bfs::kVHeaddim) + "_" +
@@ -104,7 +107,8 @@ struct FmhaBwdDQDKDVKernel
             "w" + _TS_(gwt1::at(ck_tile::number<0>{})) + "x" + _TS_(gwt1::at(ck_tile::number<1>{})) + "x" + _TS_(gwt1::at(ck_tile::number<2>{})) + "_" +
             ("o" + _TS_(kBlockPerCu) + "_") + _SS_(FmhaPipeline::name) + (pn.empty() ? "" : "_" + pn) +
             (BiasEnum == BlockAttentionBiasEnum::NO_BIAS ? _SS_("") : (_SS_("_") + BlockAttentionBiasEnumToStr<BiasEnum>::name)) +
-            (kHasBiasGrad ? "_dbias" : "") + (kHasMask ? "_" + _SS_(FmhaMask::name) : "") + (kHasDropout ? "_dropout" : "" ) +
+            (kHasBiasGrad ? "_dbias" : "") + (kHasMask ? "_" + _SS_(FmhaMask::name) : "") +
+            (kHasDropout ? (kIsLoadRandval ? "_dropout_load" : "_dropout_replay") : "") +
             (kIsStoreRandval ? "_storerandval" : "" ) + (kIsDeterministic ? "_deterministic" : "" );
         #undef _SS_
         #undef _TS_
@@ -471,7 +475,7 @@ struct FmhaBwdDQDKDVKernel
                                    scale);
             }
 
-            if constexpr(kIsStoreRandval || kHasDropout)
+            if constexpr(kIsStoreRandval || kIsLoadRandval)
             {
                 kargs.rand_val_ptr         = rand_val_ptr;
                 kargs.stride_randval       = stride_randval;
@@ -626,7 +630,7 @@ struct FmhaBwdDQDKDVKernel
             }
 
             // [HCU移植] 同上：group 模式 kargs 无 batch_stride_randval。
-            if constexpr(kIsStoreRandval || kHasDropout)
+            if constexpr(kIsStoreRandval || kIsLoadRandval)
             {
                 kargs.rand_val_ptr         = rand_val_ptr;
                 kargs.stride_randval       = stride_randval;
@@ -724,7 +728,7 @@ struct FmhaBwdDQDKDVKernel
             {
                 batch_offset_dbias = key_start;
             }
-            if constexpr(kIsStoreRandval || kHasDropout)
+            if constexpr(kIsStoreRandval || kIsLoadRandval)
             {
                 batch_offset_randval = query_start * kargs.stride_randval;
             }
@@ -769,7 +773,7 @@ struct FmhaBwdDQDKDVKernel
             {
                 batch_offset_dbias = static_cast<long_index_t>(i_batch) * kargs.batch_stride_dbias;
             }
-            if constexpr(kIsStoreRandval || kHasDropout)
+            if constexpr(kIsStoreRandval || kIsLoadRandval)
             {
                 batch_offset_randval =
                     static_cast<long_index_t>(i_batch) * kargs.batch_stride_randval;
@@ -1072,7 +1076,12 @@ struct FmhaBwdDQDKDVKernel
             scale_rp_undrop = kargs.scale_rp_undrop;
         }
         auto dropout = [&]() {
-            if constexpr(kHasDropout)
+            if constexpr(kIsLoadRandval)
+            {
+                return FmhaDropout{i_batch_, i_nhead_, kargs.num_head_q,
+                                   0, 0, kargs.rp_undrop, kargs.p_undrop_in_uint8_t};
+            }
+            else if constexpr(kHasDropout)
             {
                 return FmhaDropout{i_batch_,
                                    i_nhead_,
@@ -1093,7 +1102,7 @@ struct FmhaBwdDQDKDVKernel
         auto randval_dram_window = [&]() {
             constexpr auto randval_dram_window_lengths =
                 make_tuple(number<FmhaPipeline::kM0>{}, number<FmhaPipeline::kN0>{});
-            if constexpr(kIsStoreRandval || kHasDropout)
+            if constexpr(kIsStoreRandval || kIsLoadRandval)
             {
                 static_assert(sizeof(RandValOutputDataType) == 1,
                               "randval DRAM view is accessed as a 1-byte (int8) dtype");

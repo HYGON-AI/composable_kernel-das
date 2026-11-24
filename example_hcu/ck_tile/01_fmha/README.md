@@ -42,7 +42,7 @@ repository root (retain the compiler and toolchain settings of that build):
 ```bash
 cmake -S . -B build \
   -DFMHA_FWD_ENABLE_APIS=all \
-  -DFMHA_FWD_RECEIPT=4 -DFMHA_FWD_OPT_DIM=64,128 \
+  -DFMHA_FWD_RECEIPT=600 -DFMHA_FWD_OPT_DIM=64,128 \
   '-DFMHA_FWD_KERNEL_FILTER=*_psddv_nlogits_nbias_nmask_nlse_*,*_batch*_psdv_*@*_batch*_psskddv_*_nsink,*_psskddv*,*_pssk_*_nskip_*_nsink'
 cmake --build build --target tile_example_fmha_fwd -j 16
 python -B example_hcu/ck_tile/01_fmha/test_hcu_codegen.py
@@ -50,13 +50,67 @@ python -B example_hcu/ck_tile/01_fmha/test_hcu_extended_fwd.py \
   build/bin/tile_example_fmha_fwd --output build/fmha_validation
 ```
 
-The numerical suite checks 104 cases against the runner's CPU reference,
+Receipt 600 includes the split-KV softcap instances required by this suite;
+receipt 4 excludes them. The numerical suite checks 104 cases against the runner's CPU reference,
 including actual API names to detect fallback. It covers both data types and head
 buckets, uneven/empty splits, GQA decode, causal/sliding masks, bias, softcap,
 head-dimension tails for split-KV, group-mode paged prefill, cache indirection,
 append-KV and both rotary layouts. The paged runner requires page sizes divisible
-by 128. The selected receipt excludes sink and FP8; this suite does not validate
+by 128. This configuration excludes sink and FP8; this suite does not validate
 backward or performance.
+
+## HCU backward Dropout
+
+For gfx936/gfx938, receipt 3 retains the load policy: `rand_val_ptr` must contain
+the bytes captured by FWD, with valid row, head and batch strides. Load does not
+consume seed/offset. Receipts 2, 4, 300, 600 and 700 use a separate replay policy
+matching the 16x64 QK tiles of `qr_async`. They accept host values or device
+pointers for the same FWD seed/offset. Replay without random-value output accepts
+a null `rand_val_ptr` and zero strides. Receipt 600 also generates a replay
+variant that writes random bytes for validation.
+
+The replay mapping differs between gfx936 and gfx938. Pair BWD with the matching
+CK FWD; a seed from another attention implementation alone does not establish the
+same mask. No new argument field is needed. The generator keeps load and replay
+in separate receipts so their runtime trait predicates cannot overlap.
+
+The supported backward closure is fixed-length batch, FP16/BF16, head dimensions
+up to 128, no bias/dbias and non-deterministic gradients. Receipt 400 remains
+unsupported on these targets. gfx946 retains its previous load-only example
+configuration. The ordinary FWD path still requires head dimensions divisible by
+8, while the padded BWD path supports dimensions 1 through 128.
+
+The launch API rejects a missing randval buffer for load/store policies, invalid
+strides, invalid Dropout probabilities and missing device seed/offset pointers
+for replay. FWD-captured random bytes must be used for a numerical comparison
+between FWD and BWD; independently generated host bytes are only a load-policy
+control. The BWD example's low-precision probability reference can have different
+rounding from online FWD, so independent FP64 checks should retain the same
+captured mask and actual quantized inputs.
+
+BF16 BWD accumulates the residual discarded when probabilities are rounded
+before the dV matrix product. BF16 Dropout FWD also accumulates the probability
+residual, and Dropout BWD accumulates the dS residual.
+Rows with at most one valid key have zero dS. These corrections retain the
+`atol=rtol=0.01` FP64 comparison for the `64x64/D64`, `p_drop=0.99` regression;
+the extra matrix products have a runtime cost.
+
+Receipt 4 additionally provides the explicit `bf16_fp32kv` data-type key on
+gfx936/gfx938. Inputs, O, dO and dQ remain BF16; dK and dV pointers must refer to
+FP32 storage, with strides measured in FP32 elements. This variant lets a GQA
+caller sum query-head groups in FP32 before converting the final gradients to
+BF16. The existing `bf16` key retains BF16 dK/dV storage.
+
+Run the causal, padding, empty-row and GQA regressions after building both native
+examples with the default receipt 3:
+
+```bash
+python -B example_hcu/ck_tile/01_fmha/test_hcu_codegen.py
+python -B example_hcu/ck_tile/01_fmha/test_hcu_fmha.py \
+  --fwd build/bin/tile_example_fmha_fwd \
+  --bwd build/bin/tile_example_fmha_bwd \
+  --output build/fmha_regression --full
+```
 
 ## kernel
 The kernel template is `fmha_fwd_kernel.hpp`, this is the grid-wise op in old ck_tile's terminology. We put it here purposely, to demonstrate one can construct a kernel by using various internal component from ck_tile. We may still have an implementation under ck_tile's include path (in the future) for the kernel template.
