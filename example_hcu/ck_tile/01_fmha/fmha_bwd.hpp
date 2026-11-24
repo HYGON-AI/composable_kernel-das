@@ -32,6 +32,10 @@ struct FmhaBwdBf16
 {
 };
 
+struct FmhaBwdBf16Fp32KV
+{
+};
+
 template <typename DataType>
 struct FmhaBwdTypeConfig;
 
@@ -93,6 +97,14 @@ struct FmhaBwdTypeConfig<FmhaBwdBf16>
     using KGradDataType         = ck_tile::bf16_t;
     using VGradDataType         = ck_tile::bf16_t;
     using BiasGradDataType      = ck_tile::bf16_t;
+};
+
+// Keep dK/dV in FP32 until the caller has reduced query-head groups.
+template <>
+struct FmhaBwdTypeConfig<FmhaBwdBf16Fp32KV> : FmhaBwdTypeConfig<FmhaBwdBf16>
+{
+    using KGradDataType = float;
+    using VGradDataType = float;
 };
 
 struct FmhaMasks
@@ -459,6 +471,8 @@ template <ck_tile::index_t HDim_,
           ck_tile::index_t kN0>
 struct fmha_bwd_dq_dk_dv_traits_
 {
+    using FmhaDropout = FmhaDropout_;
+    static constexpr bool kIsGroupMode = kIsGroupMode_;
 };
 
 template <typename Traits_, typename Arch = void>
@@ -562,6 +576,38 @@ template <typename T0 /*dot_do_o_trait*/,
           typename Arch>
 float fmha_bwd_(const ck_tile::stream_config& s, fmha_bwd_args a)
 {
+    using Dropout = typename T1::FmhaDropout;
+    if(!(a.p_drop >= 0 && a.p_drop < 1) || Dropout::IsDropout != (a.p_drop > 0))
+    {
+        std::cerr << "fmha_bwd: dropout probability does not match the selected policy\n";
+        return -1;
+    }
+    if constexpr(Dropout::IsDropout)
+    {
+        if constexpr(Dropout::IsLoadRandval || Dropout::IsStoreRandval)
+        {
+            const auto columns = T1::kIsGroupMode ? a.max_seqlen_k : a.seqlen_k;
+            if(a.rand_val_ptr == nullptr || a.stride_randval < columns ||
+               (a.nhead_q > 1 && a.nhead_stride_randval <= 0) ||
+               (!T1::kIsGroupMode && a.batch > 1 && a.batch_stride_randval <= 0))
+            {
+                std::cerr << "fmha_bwd: randval storage and strides are required by the selected policy\n";
+                return -1;
+            }
+        }
+        if constexpr(!Dropout::IsLoadRandval)
+        {
+            if(a.drop_seed_offset.index() == 1)
+            {
+                const auto& [seed, offset] = std::get<1>(a.drop_seed_offset);
+                if(seed == nullptr || offset == nullptr)
+                {
+                    std::cerr << "fmha_bwd: device seed and offset must be non-null\n";
+                    return -1;
+                }
+            }
+        }
+    }
     if constexpr(!std::is_same_v<T2, void>)
     {
         if(s.log_level_ > 0)

@@ -238,8 +238,6 @@ struct BlockFmhaPipelineQRKSVSAsync
         // TODO: start from rocm-6.2, compiler will have problem if manually set clear of q.
         // however, q would be cleared in the constructor of static distributed tensor
         // set_tile(q, number<0>{}); // use per-dword clear to avoid scratch
-        load_tile_raw(q, q_dram_window);
-        __builtin_amdgcn_sched_barrier(0);
 
         using SaccBlockTileType = decltype(gemm_0.MakeCBlockTile());
         auto s_acc              = SaccBlockTileType{};
@@ -294,6 +292,9 @@ struct BlockFmhaPipelineQRKSVSAsync
             }
             __builtin_amdgcn_sched_barrier(0); // make sure sched_barrier(0) for this check
         }
+
+        load_tile_raw(q, q_dram_window);
+        __builtin_amdgcn_sched_barrier(0);
 
         auto k_dram_block_window =
             make_tile_window(k_dram_block_window_tmp.get_bottom_tensor_view(),
@@ -620,6 +621,16 @@ struct BlockFmhaPipelineQRKSVSAsync
                         tile_elementwise_in(p_compute_element_func, p_compute));
             }();
 
+            auto p_residual = p;
+            if constexpr(kHasDropout && std::is_same_v<PDataType, bf16_t>)
+            {
+                p_residual = tile_elementwise_in(
+                    [&](const auto& full, const auto& rounded) {
+                        return type_convert<PDataType>(p_compute_element_func(full) -
+                                                       type_convert<float>(rounded));
+                    }, p_compute, p);
+            }
+
             // [HCU移植] P-bridge：FMHA 移植新增的关键步骤（上游 github CK 没有）。
             // 在 HCU 上，QK GEMM 输出 C 的 lane 布局与 PV GEMM 输入 A 的 lane 布局对不上
             // （MFMA 上两者天然衔接），因此把 P 经一块专用 LDS scratch（K/V 共享缓冲之后）
@@ -629,7 +640,7 @@ struct BlockFmhaPipelineQRKSVSAsync
             // LitLts QK C encoding: buffer[c*4+r] -> (row=4*(lane/16)+r, col=c*16+lane%16)
             // Basic QK C encoding:  buffer[c*4+r] -> (row=lane%16,       col=c*16+r*4+lane/16)
             // PV A encoding:        buffer[k]     -> (row=lane%16,       col=(lane/16)*16+k)
-            {
+            auto bridge_p = [&](auto& bridge_tile) {
                 auto* scratch = reinterpret_cast<PDataType*>(
                     reinterpret_cast<char*>(smem_ptr) +
                     Policy::template GetSmemSizeKVWithoutPBridge<Problem>());
@@ -650,7 +661,7 @@ struct BlockFmhaPipelineQRKSVSAsync
 #else
                         int n_col = c * 16 + r * 4 + lane / 16;
 #endif
-                        scratch[m_row * kRowStride + n_col] = p.get_thread_buffer()[c * 4 + r];
+                        scratch[m_row * kRowStride + n_col] = bridge_tile.get_thread_buffer()[c * 4 + r];
                     }
                 }
 
@@ -660,9 +671,16 @@ struct BlockFmhaPipelineQRKSVSAsync
 
                 // Read: LDS row-major -> PV AWarpTensor layout
                 for (int k = 0; k < 16; k++) {
-                    p.get_thread_buffer()[k] =
+                    bridge_tile.get_thread_buffer()[k] =
                         scratch[(lane % 16) * kRowStride + (lane / 16) * 16 + k];
                 }
+            };
+            bridge_p(p);
+            if constexpr(kHasDropout && std::is_same_v<PDataType, bf16_t>)
+            {
+                block_sync_lds();
+                bridge_p(p_residual);
+                block_sync_lds();
             }
 
             // STAGE 3, KV gemm
@@ -681,6 +699,16 @@ struct BlockFmhaPipelineQRKSVSAsync
                                v_lds_window,
                                sequence<(LdsSeq.at(number<k0_loops + i_k1>{})) * kN1, 0>{},
                                sequence<(LdsSeq.at(number<k0_loops + i_k1>{}) + 1) * kN1, kK1>{}));
+                if constexpr(kHasDropout && std::is_same_v<PDataType, bf16_t>)
+                {
+                    gemm_1(o_acc,
+                           get_slice_tile(
+                               p_residual, sequence<0, i_k1 * kK1>{}, sequence<kM0, (i_k1 + 1) * kK1>{}),
+                           get_slice_tile(
+                               v_lds_window,
+                               sequence<(LdsSeq.at(number<k0_loops + i_k1>{})) * kN1, 0>{},
+                               sequence<(LdsSeq.at(number<k0_loops + i_k1>{}) + 1) * kN1, kK1>{}));
+                }
 
                     if constexpr(std::is_same_v<VLayout, ck_tile::tensor_layout::gemm::RowMajor>)
                     {
@@ -737,6 +765,16 @@ struct BlockFmhaPipelineQRKSVSAsync
                         v_lds_window,
                         sequence<(LdsSeq.at(number<k0_loops + k1_loops - 1>{})) * kN1, 0>{},
                         sequence<(LdsSeq.at(number<k0_loops + k1_loops - 1>{}) + 1) * kN1, kK1>{}));
+                if constexpr(kHasDropout && std::is_same_v<PDataType, bf16_t>)
+                {
+                gemm_1(
+                    o_acc,
+                    get_slice_tile(p_residual, sequence<0, (k1_loops - 1) * kK1>{}, sequence<kM0, kN0>{}),
+                    get_slice_tile(
+                        v_lds_window,
+                        sequence<(LdsSeq.at(number<k0_loops + k1_loops - 1>{})) * kN1, 0>{},
+                        sequence<(LdsSeq.at(number<k0_loops + k1_loops - 1>{}) + 1) * kN1, kK1>{}));
+                }
             }
             if constexpr(k1_loops == 1)
             {

@@ -314,6 +314,7 @@ template <bool IsWG32_, bool IsStoreRandval_>
 struct BlockDropoutBwd<false, IsWG32_, IsStoreRandval_>
 {
     static constexpr bool IsDropout      = false;
+    static constexpr bool IsLoadRandval  = false;
     static constexpr bool IsStoreRandval = IsStoreRandval_;
 
     template <typename BlockGemm, bool IsFwd = true, typename RandValDramBlockWindowTmp>
@@ -332,6 +333,7 @@ template <bool IsWG32_, bool IsStoreRandval_>
 struct BlockDropoutBwd<true, IsWG32_, IsStoreRandval_>
 {
     static constexpr bool IsDropout = true;
+    static constexpr bool IsLoadRandval = false;
     // true:  32*32 warp gemm
     // false: 16*16 warp gemm
     static constexpr bool IsWG32         = IsWG32_;
@@ -651,10 +653,9 @@ struct BlockDropoutBwd<true, IsWG32_, IsStoreRandval_>
                 uint2 rowcol = make_uint2(block_row_start, block_col_start);
 
                 // generate random number
-                uint8_t* random_uint8_t_;
+                uint8_t random_uint8_t[16];
                 if constexpr(MBwdWG16SingleIterCheck)
                 {
-                    uint8_t random_uint8_t[4];
                     // m0t0 ~m0t15/m0t32~m0t47: 0
                     // m0t16~m0t31/m0t48~m0t63: 1
                     // m1t0 ~m1t15/m1t32~m1t47: 2
@@ -663,24 +664,19 @@ struct BlockDropoutBwd<true, IsWG32_, IsStoreRandval_>
                         ((get_lane_id() >> 4) & 1) + (((start_m0_idx >> 4) & 1) << 1);
                     ph.get_random_4x8(
                         random_uint8_t, reinterpret_cast<unsigned long long&>(rowcol), start_idx);
-                    random_uint8_t_ = random_uint8_t;
                 }
                 else if constexpr(MBwdWG16MultiIterCheck)
                 {
-                    uint8_t random_uint8_t[8];
                     // t0 ~t15/t32~t47: 0
                     // t16~t31/t48~t63: 1
                     const index_t start_idx = (get_lane_id() >> 4) & 1;
                     ph.get_random_8x8(
                         random_uint8_t, reinterpret_cast<unsigned long long&>(rowcol), start_idx);
-                    random_uint8_t_ = random_uint8_t;
                 }
                 else
                 {
-                    uint8_t random_uint8_t[16];
                     ph.get_random_16x8(random_uint8_t,
                                        reinterpret_cast<unsigned long long&>(rowcol));
-                    random_uint8_t_ = random_uint8_t;
                 }
 
                 constexpr auto randval_spans = decltype(randval)::get_distributed_spans();
@@ -688,7 +684,7 @@ struct BlockDropoutBwd<true, IsWG32_, IsStoreRandval_>
                 sweep_tile_span(randval_spans[number<0>{}], [&](auto idx0) {
                     sweep_tile_span(randval_spans[number<1>{}], [&](auto idx1) {
                         constexpr auto r_idx  = ck_tile::make_tuple(idx0, idx1);
-                        randval(r_idx)        = random_uint8_t_[i_random_idx++];
+                        randval(r_idx)        = random_uint8_t[i_random_idx++];
                         constexpr auto p_idx0 = tile_distributed_index<i_m0 + idx0.impl_.at(0),
                                                                        idx0.impl_.at(1),
                                                                        idx0.impl_.at(2)>{};
@@ -727,6 +723,7 @@ template <bool IsStoreRandval_>
 struct BlockDropoutBwdLoadRandval
 {
     static constexpr bool IsDropout      = true;
+    static constexpr bool IsLoadRandval  = true;
     static constexpr bool IsStoreRandval = IsStoreRandval_;
 
     CK_TILE_HOST_DEVICE BlockDropoutBwdLoadRandval(index_t i_batch,
@@ -785,6 +782,83 @@ struct BlockDropoutBwdLoadRandval
     }
 
     const uint8_t p_undrop_in_uint8_t;
+};
+
+// Replays the random bytes used by the 16x64 QK tiles in qr_async.
+template <bool IsStoreRandval_>
+struct BlockDropoutBwdReplayHcu
+{
+    static constexpr bool IsDropout      = true;
+    static constexpr bool IsLoadRandval  = false;
+    static constexpr bool IsStoreRandval = IsStoreRandval_;
+
+    CK_TILE_HOST_DEVICE BlockDropoutBwdReplayHcu(index_t i_batch,
+                                                index_t i_head,
+                                                index_t nheads,
+                                                unsigned long long seed,
+                                                unsigned long long offset,
+                                                float,
+                                                uint8_t threshold)
+        : seed_(seed),
+          offset_(offset + (static_cast<unsigned long long>(i_batch) * nheads + i_head) * 64),
+          threshold_(threshold)
+    {
+    }
+
+    template <typename BlockGemm, bool IsFwd = true, typename Window>
+    CK_TILE_HOST_DEVICE static constexpr auto MakeRandvalDramWindow(Window& window,
+                                                                   index_t start_m)
+    {
+        static_assert(!IsFwd, "BlockDropoutBwdReplayHcu is bwd-only");
+        if constexpr(IsStoreRandval)
+            return make_tile_window(window.get_bottom_tensor_view(),
+                                    window.get_window_lengths(),
+                                    {start_m, window.get_window_origin().at(number<1>{})});
+        else
+            return make_null_tile_window(window.get_window_lengths());
+    }
+
+    template <typename BlockGemm, typename RandValOutputDataType, typename P, typename Window>
+    CK_TILE_HOST_DEVICE void Run(index_t start_m, index_t start_n, P& p, Window& window) const
+    {
+        auto random_tile = make_static_distributed_tensor<uint8_t>(p.get_tile_distribution());
+        constexpr auto spans = remove_cvref_t<P>::get_distributed_spans();
+        sweep_tile_span(spans[number<0>{}], [&](auto mi) {
+            sweep_tile_span(spans[number<1>{}], [&](auto ni) {
+                constexpr auto idx = make_tuple(mi, ni);
+                const auto coord =
+                    get_x_indices_from_distributed_indices(p.get_tile_distribution(), idx);
+                const auto m = start_m + coord.at(number<0>{});
+                const auto n = start_n + coord.at(number<1>{});
+#if defined(__gfx938__)
+                const auto lane = n % 16 + 16 * ((m % 16) / 4);
+                const auto byte = (m % 4) * 4 + (n % 64) / 16;
+#else
+                const auto lane = m % 16 + 16 * (n % 4);
+                const auto byte = (n % 64) / 4;
+#endif
+                const unsigned long long subsequence =
+                    static_cast<unsigned long long>(m / 16) |
+                    (static_cast<unsigned long long>(n / 64) << 32);
+                uint8_t values[16];
+                philox generator(seed_, offset_ + lane);
+                generator.get_random_16x8(values, subsequence);
+                random_tile(idx) = values[byte];
+                p(idx) = values[byte] <= threshold_ ? p[idx] : -p[idx];
+            });
+        });
+        if constexpr(IsStoreRandval)
+        {
+            auto output = make_tile_window(window.get_bottom_tensor_view(),
+                                           window.get_window_lengths(),
+                                           {start_m, start_n}, p.get_tile_distribution());
+            store_tile(output, cast_tile<int8_t>(random_tile));
+        }
+    }
+
+    const unsigned long long seed_;
+    const unsigned long long offset_;
+    const uint8_t threshold_;
 };
 
 } // namespace ck_tile
